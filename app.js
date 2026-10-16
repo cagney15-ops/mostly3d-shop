@@ -408,7 +408,9 @@ function renderSettings(){
   const me = state.session && state.session.user ? state.session.user.email : '';
   $('#allowedBox').innerHTML = '<div class="shead" style="font-size:11px;letter-spacing:.16em;text-transform:uppercase;font-weight:600;color:var(--ink-2)">Who can sign in<small style="display:block;font-weight:400;letter-spacing:0;text-transform:none;color:var(--ink-3);font-size:12px;margin-top:2px">Anyone can create an account, but only these emails can see or change the shop.</small></div>' +
     '<ul>' + state.allowedUsers.map(e => '<li><span>' + esc(e) + (e === me ? ' <span class="badge-ex">you</span>' : '') + '</span>' + (e === me ? '' : '<button class="btn ghost small" data-action="allowed-remove" data-email="' + esc(e) + '">Remove</button>') + '</li>').join('') + '</ul>' +
-    '<form class="row" id="allowedForm"><input id="allowedEmail" type="email" placeholder="email to allow" required><button class="btn small" type="submit">Allow</button></form>';
+    '<form class="row" id="allowedForm"><input id="allowedEmail" type="email" placeholder="email to allow" required><button class="btn small" type="submit">Allow</button></form>' +
+    '<div class="shead" style="font-size:11px;letter-spacing:.16em;text-transform:uppercase;font-weight:600;color:var(--ink-2);margin-top:22px">Your password<small style="display:block;font-weight:400;letter-spacing:0;text-transform:none;color:var(--ink-3);font-size:12px;margin-top:2px">Signed in as ' + esc(me) + '. Change it here; no email needed.</small></div>' +
+    '<form class="row" id="passForm" autocomplete="off"><input id="passNew" type="password" placeholder="new password (8+ characters)" autocomplete="new-password" minlength="8" required><input id="passAgain" type="password" placeholder="again" autocomplete="new-password" minlength="8" required><button class="btn small" type="submit">Change</button></form>';
 }
 
 function renderAll(){
@@ -702,6 +704,7 @@ function copyText(txt, okMsg){
 }
 document.addEventListener('submit', async e => {
   if (e.target.id === 'scanForm') { e.preventDefault(); const v = $('#scanCode').value; $('#scanCode').value = ''; handleScan(v); return; }
+  if (e.target.id === 'passForm') { e.preventDefault(); const a = $('#passNew').value, b2 = $('#passAgain').value; if (a.length < 8) { toast('Use at least 8 characters', true); return; } if (a !== b2) { toast('The two passwords do not match', true); return; } const r = await sb.auth.updateUser({ password: a }); if (r.error) { toast('Could not change it: ' + r.error.message, true); return; } $('#passNew').value = ''; $('#passAgain').value = ''; toast('Password changed'); return; }
   if (e.target.id === 'allowedForm') { e.preventDefault(); const email = $('#allowedEmail').value.trim().toLowerCase(); if (!email) return; try { await dbWrite(() => sb.from('allowed_users').upsert({ email }), 'Could not add'); if (state.allowedUsers.indexOf(email) < 0) state.allowedUsers.push(email); state.allowedUsers.sort(); renderSettings(); toast(email + ' can sign in now'); } catch (err) {} return; }
 });
 document.addEventListener('change', async e => {
