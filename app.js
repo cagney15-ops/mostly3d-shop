@@ -12,7 +12,7 @@ function saveCollapsed(){ try { localStorage.setItem(COLLAPSE_KEY, JSON.stringif
 const state = {
   session: null, allowed: null, loaded: false,
   settings: Object.assign({}, DEFAULT_SETTINGS),
-  spools: {}, products: {}, pf: {}, movements: [], gtin: {}, allowedUsers: [],
+  spools: {}, products: {}, pf: {}, pc: {}, movements: [], gtin: {}, allowedUsers: [],
   ui: { line: 'all', q: '', rackLine: 'all', lowOnly: false, productQ: '', productFilter: 'all', logKind: 'all', labelKind: 'spools', collapsed: loadCollapsed(), scanMode: 'lookup', recovery: false }
 };
 
@@ -22,6 +22,7 @@ const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({'&':'&amp
 const USD = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' });
 const money = n => USD.format(isFinite(n) ? n : 0);
 const money4 = n => '$' + (isFinite(n) ? n : 0).toFixed(4);
+const gnum = n => { n = +n || 0; return Math.abs(n - Math.round(n)) < 0.05 ? Math.round(n).toString() : n.toFixed(1); };
 const grams = n => { n = +n || 0; return (Math.abs(n - Math.round(n)) < 0.05 ? Math.round(n).toString() : n.toFixed(1)) + ' g'; };
 const kg = n => (Math.round((+n || 0) / 10) / 100).toFixed(2) + ' kg';
 const num = v => { const n = parseFloat(v); return isFinite(n) ? n : 0; };
@@ -78,26 +79,51 @@ function restock(sp, g){
 }
 
 /* ---------------- product costing ---------------- */
+// Filament rows hold the slicer's numbers for a whole plate (model / purged / tower grams);
+// the product says how many units are on that plate and how long it prints. Everything is divided by that.
 function recipe(p){ return (state.pf[p.id] || []).slice().sort((a, b) => num(a.position) - num(b.position)); }
-function productCost(p){
-  const S = state.settings; const rec = recipe(p);
-  let g = 0, material = 0; const bySpool = {}; const missing = [];
-  rec.forEach(r => { const sp = state.spools[r.spool_id]; const gr = num(r.grams); g += gr; if (!sp) { if (gr > 0) missing.push(r); return; } bySpool[sp.id] = (bySpool[sp.id] || 0) + gr; material += gr * ppg(sp); });
+function components(p){ return (state.pc[p.id] || []).slice().sort((a, b) => num(a.position) - num(b.position)); }
+function isPlayset(p){ return !!p && p.kind === 'playset'; }
+function plateQty(p){ const n = Math.round(num(p.plate_qty)); return n >= 1 ? n : 1; }
+function productCost(p, depth){
+  depth = depth || 0; const S = state.settings; const n = plateQty(p); const playset = isPlayset(p);
+  let g = 0, modelG = 0, wasteG = 0, material = 0; const bySpool = {}; const missing = []; const rows = []; const comps = [];
+  if (!playset) {
+    recipe(p).forEach(r => {
+      const sp = state.spools[r.spool_id];
+      const model = num(r.grams) / n, purge = num(r.purge_g) / n, tower = num(r.tower_g) / n, tot = model + purge + tower;
+      if (!sp) { if (tot > 0) missing.push(r); return; }
+      g += tot; modelG += model; wasteG += purge + tower;
+      bySpool[sp.id] = (bySpool[sp.id] || 0) + tot; const cost = tot * ppg(sp); material += cost;
+      rows.push({ sp, model, purge, tower, tot, cost });
+    });
+  } else if (depth < 6) {
+    components(p).forEach(c => {
+      const cp = state.products[c.component_id]; const q = num(c.qty);
+      if (!cp) { if (q > 0) missing.push(c); return; }
+      const cc = productCost(cp, depth + 1);
+      comps.push({ cp, qty: q, unit: cc.unit, cost: cc.unit * q, filamentG: cc.filamentG * q });
+      material += cc.unit * q; g += cc.filamentG * q;
+    });
+  }
   const avg = g > 0 ? material / g : 0;
-  const flushG = num(p.flush_g), towerG = num(p.tower_g), otherG = g * num(S.otherWastePct) / 100;
-  const waste = (flushG + towerG) * avg + material * num(S.otherWastePct) / 100;
-  const energy = num(p.hours_per_unit) * num(S.energyRate);
-  const base = material + waste + energy; const failure = base * num(S.failurePct) / 100;
+  const otherG = playset ? 0 : g * num(S.otherWastePct) / 100;
+  const otherWaste = playset ? 0 : material * num(S.otherWastePct) / 100;
+  const hours = playset ? 0 : num(p.plate_hours) / n;
+  const energy = hours * num(S.energyRate);
+  const base = material + otherWaste + energy; const failure = playset ? 0 : base * num(S.failurePct) / 100;
   const labor = num(p.finishing_min) / 60 * num(S.laborRate); const packaging = num(p.packaging);
   const unit = base + failure + labor + packaging;
   const price = num(p.price); const margin = price > 0 ? (price - unit) / price * 100 : null;
   const target = num(S.marginPct); const suggested = (target > 0 && target < 100) ? unit / (1 - target / 100) : 0;
-  return { g, material, avg, bySpool, flushG, towerG, otherG, wasteG: flushG + towerG + otherG, waste, energy, failure, labor, packaging, unit, price, margin, suggested, missing, filamentG: g + flushG + towerG + otherG };
+  return { playset, n, g, modelG, wasteG, otherG, filamentG: g + otherG, material, avg, bySpool, rows, comps, otherWaste, hours, energy, failure, labor, packaging, unit, price, margin, suggested, missing };
 }
+// What making `units` of a product takes: grams per spool (other-waste % included) or component units.
 function spoolPullFor(p, units){
-  const c = productCost(p); const pulls = [];
-  Object.keys(c.bySpool).forEach(id => { const share = c.g > 0 ? c.bySpool[id] / c.g : 0; pulls.push({ spoolId: id, grams: Math.round((c.bySpool[id] + c.wasteG * share) * units * 10) / 10 }); });
-  return { c, pulls };
+  const c = productCost(p); const pulls = []; const factor = 1 + num(state.settings.otherWastePct) / 100;
+  Object.keys(c.bySpool).forEach(id => pulls.push({ spoolId: id, grams: Math.round(c.bySpool[id] * factor * units * 10) / 10 }));
+  const parts = c.comps.map(x => ({ productId: x.cp.id, name: x.cp.name, qty: Math.round(x.qty * units * 100) / 100 }));
+  return { c, pulls, parts };
 }
 
 /* ---------------- spool drawing ---------------- */
@@ -135,22 +161,24 @@ function photoUrl(p){ if (!p || !p.photo_path) return ''; return sb.storage.from
 /* ---------------- data ---------------- */
 async function loadAll(){
   const startedAt = Date.now();
-  const [s, sp, pr, pf, mv, gt, au] = await Promise.all([
+  const [s, sp, pr, pf, pc, mv, gt, au] = await Promise.all([
     sb.from('shop_settings').select('data').eq('id', 1).maybeSingle(),
     sb.from('spools').select('*'),
     sb.from('products').select('*'),
     sb.from('product_filaments').select('*'),
+    sb.from('product_components').select('*'),
     sb.from('movements').select('*').order('created_at', { ascending: false }).limit(400),
     sb.from('gtin_map').select('*'),
     sb.from('allowed_users').select('*').order('email')
   ]);
-  const firstErr = [s, sp, pr, pf, mv, gt, au].find(r => r.error);
+  const firstErr = [s, sp, pr, pf, pc, mv, gt, au].find(r => r.error);
   if (firstErr) throw firstErr.error;
   if (lastLocalWrite > startedAt || pendingWrites > 0) { scheduleReload(); return false; } // a write landed meanwhile; this snapshot is stale
   if (!settingsDirty) { state.settings = Object.assign({}, DEFAULT_SETTINGS, (s.data && s.data.data) || {}); if (!state.settings.linePrices) state.settings.linePrices = {}; }
   state.spools = {}; (sp.data || []).forEach(r => state.spools[r.id] = r);
   state.products = {}; (pr.data || []).forEach(r => state.products[r.id] = r);
   state.pf = {}; (pf.data || []).forEach(r => { (state.pf[r.product_id] = state.pf[r.product_id] || []).push(r); });
+  state.pc = {}; (pc.data || []).forEach(r => { (state.pc[r.product_id] = state.pc[r.product_id] || []).push(r); });
   state.movements = mv.data || [];
   state.gtin = {}; (gt.data || []).forEach(r => state.gtin[r.gtin] = r.cat_key);
   state.allowedUsers = (au.data || []).map(r => r.email);
@@ -182,14 +210,19 @@ async function saveProduct(p){
 }
 async function deleteProduct(id){
   const p = state.products[id];
-  await dbWrite(() => sb.from('products').delete().eq('id', id), 'Could not delete the product'); delete state.products[id]; delete state.pf[id];
+  await dbWrite(() => sb.from('products').delete().eq('id', id), 'Could not delete the product'); delete state.products[id]; delete state.pf[id]; delete state.pc[id];
   if (p && p.photo_path) removePhotos([p.photo_path]);
 }
 async function removePhotos(paths){ try { await sb.storage.from(CONFIG.photoBucket).remove(paths.filter(Boolean)); } catch (e) { console.warn('photo cleanup', e); } }
 async function saveRecipe(productId, rows){
   await dbWrite(() => sb.from('product_filaments').delete().eq('product_id', productId), 'Could not save the filaments');
-  const clean = rows.filter(r => r.spool_id || num(r.grams) > 0).map((r, i) => ({ product_id: productId, spool_id: r.spool_id || null, grams: num(r.grams), position: i }));
+  const clean = rows.filter(r => r.spool_id || num(r.grams) > 0 || num(r.purge_g) > 0 || num(r.tower_g) > 0).map((r, i) => ({ product_id: productId, spool_id: r.spool_id || null, grams: num(r.grams), purge_g: num(r.purge_g), tower_g: num(r.tower_g), position: i }));
   if (clean.length) { const r = await dbWrite(() => sb.from('product_filaments').insert(clean).select(), 'Could not save the filaments'); state.pf[productId] = r.data; } else state.pf[productId] = [];
+}
+async function saveComponents(productId, rows){
+  await dbWrite(() => sb.from('product_components').delete().eq('product_id', productId), 'Could not save the playset contents');
+  const clean = rows.filter(r => r.component_id && r.component_id !== productId).map((r, i) => ({ product_id: productId, component_id: r.component_id, qty: num(r.qty) > 0 ? num(r.qty) : 1, position: i }));
+  if (clean.length) { const r = await dbWrite(() => sb.from('product_components').insert(clean).select(), 'Could not save the playset contents'); state.pc[productId] = r.data; } else state.pc[productId] = [];
 }
 async function addMovement(m){
   const row = Object.assign({ actor: state.session && state.session.user ? state.session.user.email : null }, m);
@@ -209,10 +242,11 @@ async function receiveSpool(sp, n, note){
 }
 async function makeProduct(p, units, note){
   units = Math.max(1, Math.round(units));
-  const { c, pulls } = spoolPullFor(p, units); const by = []; const shorts = [];
+  const { c, pulls, parts } = spoolPullFor(p, units); const by = []; const taken = []; const shorts = [];
   for (const pull of pulls) { const sp = state.spools[pull.spoolId]; if (!sp) continue; const rem = consume(sp, pull.grams); await saveSpool(sp); by.push({ spoolId: sp.id, color: sp.color, lineName: sp.line_name || '', grams: pull.grams, used: Math.round((pull.grams - rem) * 10) / 10 }); if (rem > 0.5) shorts.push(sp.color + ' short ' + grams(rem)); }
+  for (const part of parts) { const cp = state.products[part.productId]; if (!cp) continue; const have = num(cp.on_hand); const take = Math.min(have, part.qty); cp.on_hand = Math.round((have - take) * 100) / 100; await saveProduct(cp); taken.push({ productId: cp.id, name: cp.name, qty: part.qty, taken: take }); if (take < part.qty) shorts.push(cp.name + ' short ' + (Math.round((part.qty - take) * 100) / 100)); }
   p.on_hand = num(p.on_hand) + units; await saveProduct(p);
-  await addMovement({ kind: 'made', product_id: p.id, qty: units, grams: Math.round(c.filamentG * units * 10) / 10, cost: Math.round(c.unit * units * 100) / 100, note: note || null, detail: { by, unit: c.unit, hours: num(p.hours_per_unit) * units, short: shorts.join(', ') || null } });
+  await addMovement({ kind: 'made', product_id: p.id, qty: units, grams: Math.round(c.filamentG * units * 10) / 10, cost: Math.round(c.unit * units * 100) / 100, note: note || null, detail: { by, components: taken, unit: c.unit, hours: Math.round(c.hours * units * 100) / 100, short: shorts.join(', ') || null } });
   return { c, shorts };
 }
 async function sellProduct(p, units, note){
@@ -226,7 +260,7 @@ async function adjustProduct(p, newQty, note){
   await addMovement({ kind: 'adjust', product_id: p.id, qty: newQty - from, grams: 0, cost: 0, note: note || null, detail: { from, to: newQty } });
 }
 async function undoMovement(m){
-  if (m.kind === 'made') { const p = state.products[m.product_id]; ((m.detail && m.detail.by) || []).forEach(b => { const sp = state.spools[b.spoolId]; const g = b.used !== undefined ? num(b.used) : num(b.grams); if (sp && g > 0) restock(sp, g); }); for (const b of ((m.detail && m.detail.by) || [])) { const sp = state.spools[b.spoolId]; if (sp) await saveSpool(sp); } if (p) { p.on_hand = Math.max(0, num(p.on_hand) - num(m.qty)); await saveProduct(p); } }
+  if (m.kind === 'made') { const p = state.products[m.product_id]; ((m.detail && m.detail.by) || []).forEach(b => { const sp = state.spools[b.spoolId]; const g = b.used !== undefined ? num(b.used) : num(b.grams); if (sp && g > 0) restock(sp, g); }); for (const b of ((m.detail && m.detail.by) || [])) { const sp = state.spools[b.spoolId]; if (sp) await saveSpool(sp); } for (const cpart of ((m.detail && m.detail.components) || [])) { const cp = state.products[cpart.productId]; const back = cpart.taken !== undefined ? num(cpart.taken) : num(cpart.qty); if (cp && back > 0) { cp.on_hand = num(cp.on_hand) + back; await saveProduct(cp); } } if (p) { p.on_hand = Math.max(0, num(p.on_hand) - num(m.qty)); await saveProduct(p); } }
   else if (m.kind === 'sold') { const p = state.products[m.product_id]; if (p) { p.on_hand = num(p.on_hand) + num(m.qty); await saveProduct(p); } }
   else if (m.kind === 'receive') { const sp = state.spools[m.spool_id]; if (sp) { sp.rolls = Math.max(0, rollsOf(sp) - Math.round(num(m.qty))); if (sp.rolls === 0) sp.open_left = 0; await saveSpool(sp); } }
   else if (m.kind === 'adjust') { if (m.product_id) { const p = state.products[m.product_id]; if (p && m.detail) { p.on_hand = num(m.detail.from); await saveProduct(p); } } else if (m.spool_id) { const sp = state.spools[m.spool_id]; if (sp && m.detail && m.detail.from) { sp.rolls = num(m.detail.from.rolls); sp.open_left = num(m.detail.from.open_left); await saveSpool(sp); } } }
@@ -254,16 +288,27 @@ function renderProducts(){
   if (state.ui.productFilter === 'low') list = list.filter(p => productStatus(p) !== 'ok');
   if (q) list = list.filter(p => ((p.name || '') + ' ' + (p.sku || '') + ' ' + (p.barcode || '') + ' ' + (p.description || '')).toLowerCase().indexOf(q) >= 0);
   let html = list.map(p => {
-    const c = productCost(p); const st = productStatus(p); const url = photoUrl(p); const rec = recipe(p);
+    const c = productCost(p); const st = productStatus(p); const url = photoUrl(p);
+    const dots = isPlayset(p) ? playsetDots(p) : recipe(p).map(r => state.spools[r.spool_id]);
+    const sub = isPlayset(p) ? 'Playset · ' + c.comps.length + ' product' + (c.comps.length === 1 ? '' : 's') + (p.sku ? ' · ' + esc(p.sku) : '') : esc(p.sku || p.barcode || '') + (c.n > 1 ? ' · ' + c.n + ' per plate' : '');
     return '<button class="pcard' + (p.example ? ' ex' : '') + '" data-action="product-open" data-id="' + esc(p.id) + '">' +
       '<div class="photo">' + (url ? '<img src="' + esc(url) + '" alt="" loading="lazy">' : '<span class="ph">no photo yet</span>') +
       '<span class="stock' + (st !== 'ok' ? ' low' : '') + '">' + num(p.on_hand) + (st === 'out' ? ' · out' : st === 'low' ? ' · low' : '') + '</span>' +
-      '<span class="dots">' + rec.map(r => dotHTML(state.spools[r.spool_id], true)).join('') + '</span></div>' +
-      '<div class="body"><div class="pn">' + esc(p.name || 'Unnamed product') + (p.archived ? ' <span class="badge-ex">archived</span>' : '') + '</div><div class="sku">' + esc(p.sku || p.barcode || '') + (p.example ? ' · example' : '') + '</div>' +
+      (isPlayset(p) ? '<span class="kindtag">Playset</span>' : '') +
+      '<span class="dots">' + dots.slice(0, 8).map(sp => dotHTML(sp, true)).join('') + '</span></div>' +
+      '<div class="body"><div class="pn">' + esc(p.name || 'Unnamed product') + (p.archived ? ' <span class="badge-ex">archived</span>' : '') + '</div><div class="sku">' + sub + (p.example ? ' · example' : '') + '</div>' +
       '<div class="nums"><span>cost <b>' + money(c.unit) + '</b></span><span>' + (num(p.price) > 0 ? 'sells <b>' + money(num(p.price)) + '</b>' : 'no price') + '</span>' + (c.margin !== null ? '<span class="m">' + Math.round(c.margin) + '%</span>' : '') + '</div></div></button>';
   }).join('');
   if (!list.length) html = '<div class="empty">' + (state.ui.productFilter === 'archived' ? 'Nothing archived.' : q ? 'No products match that search.' : 'No products yet. Add one, give it a photo and its filaments, and the cost works itself out.') + '</div>';
   $('#productGrid').innerHTML = html;
+}
+
+// The colors a playset is made of: every spool in its components' recipes, once each.
+function playsetDots(p, depth){
+  depth = depth || 0; const out = []; const seen = {};
+  if (depth > 5) return out;
+  components(p).forEach(c => { const cp = state.products[c.component_id]; if (!cp) return; (isPlayset(cp) ? playsetDots(cp, depth + 1) : recipe(cp).map(r => state.spools[r.spool_id])).forEach(sp => { const k = sp ? sp.id : 'missing'; if (!seen[k]) { seen[k] = true; out.push(sp); } }); });
+  return out;
 }
 
 /* ---------------- render: rack ---------------- */
@@ -342,7 +387,7 @@ function renderLog(){
       const p = m.product_id ? state.products[m.product_id] : null; const sp = m.spool_id ? state.spools[m.spool_id] : null;
       const what = p ? esc(p.name) : sp ? esc(sp.color) + ' · ' + esc(sp.line_name || '') : (m.detail && m.detail.name ? esc(m.detail.name) : '(removed)');
       let sub = '';
-      if (m.kind === 'made' && m.detail && m.detail.by) sub = m.detail.by.map(b => esc(b.color) + ' ' + grams(b.grams)).join(', ') + (m.detail.short ? ' · <b style="color:var(--red)">' + esc(m.detail.short) + '</b>' : '');
+      if (m.kind === 'made' && m.detail) sub = ((m.detail.by || []).map(b => esc(b.color) + ' ' + grams(b.grams)).concat((m.detail.components || []).map(cpart => num(cpart.qty) + ' × ' + esc(cpart.name)))).join(', ') + (m.detail.short ? ' · <b style="color:var(--red)">' + esc(m.detail.short) + '</b>' : '');
       if (m.kind === 'sold' && m.detail) sub = (m.detail.revenue ? money(num(m.detail.revenue)) + ' in sales' : 'no price set');
       if (m.kind === 'adjust' && m.detail && m.detail.from !== undefined && typeof m.detail.from !== 'object') sub = m.detail.from + ' → ' + m.detail.to;
       if (m.note) sub += (sub ? ' · ' : '') + esc(m.note);
@@ -355,7 +400,7 @@ function renderLog(){
 const csvq = s => '"' + String(s == null ? '' : s).replace(/"/g, '""') + '"';
 function logCSV(){
   const rows = [['when', 'kind', 'item', 'qty', 'grams', 'cost', 'revenue', 'detail', 'note', 'by']];
-  state.movements.slice().reverse().forEach(m => { const p = m.product_id ? state.products[m.product_id] : null; const sp = m.spool_id ? state.spools[m.spool_id] : null; rows.push([m.created_at, m.kind, p ? p.name : sp ? sp.color + ' ' + (sp.line_name || '') : '', num(m.qty), num(m.grams), num(m.cost), m.detail && m.detail.revenue ? num(m.detail.revenue) : '', m.detail && m.detail.by ? m.detail.by.map(b => b.color + ' ' + b.grams + 'g').join('; ') : '', m.note || '', m.actor || '']); });
+  state.movements.slice().reverse().forEach(m => { const p = m.product_id ? state.products[m.product_id] : null; const sp = m.spool_id ? state.spools[m.spool_id] : null; rows.push([m.created_at, m.kind, p ? p.name : sp ? sp.color + ' ' + (sp.line_name || '') : '', num(m.qty), num(m.grams), num(m.cost), m.detail && m.detail.revenue ? num(m.detail.revenue) : '', m.detail ? (m.detail.by || []).map(b => b.color + ' ' + b.grams + 'g').concat((m.detail.components || []).map(cpart => cpart.qty + ' x ' + cpart.name)).join('; ') : '', m.note || '', m.actor || '']); });
   return rows.map(r => r.map(csvq).join(',')).join('\n');
 }
 
@@ -467,64 +512,126 @@ function spoolOptions(selectedId){
   return html;
 }
 let draft = null;
-function openProductModal(id){
+function openProductModal(id, kind){
   const p = id ? state.products[id] : null;
-  draft = p ? Object.assign({}, p) : { name: '', sku: '', barcode: '', description: '', photo_path: null, on_hand: 0, price: null, hours_per_unit: 0, flush_g: 0, tower_g: 0, finishing_min: 0, packaging: 0, reorder_at: null, notes: '', archived: false };
-  draft._rec = p ? recipe(p).map(r => ({ spool_id: r.spool_id, grams: num(r.grams) })) : [{ spool_id: '', grams: 0 }];
+  draft = p ? Object.assign({}, p) : { kind: kind || 'item', name: '', sku: '', barcode: '', description: '', photo_path: null, on_hand: 0, price: null, plate_qty: 1, plate_hours: 0, hours_per_unit: 0, flush_g: 0, tower_g: 0, finishing_min: 0, packaging: 0, reorder_at: null, notes: '', archived: false };
+  if (!draft.kind) draft.kind = 'item';
+  draft._rec = p ? recipe(p).map(r => ({ spool_id: r.spool_id, grams: num(r.grams), purge_g: num(r.purge_g), tower_g: num(r.tower_g) })) : [{ spool_id: '', grams: 0, purge_g: 0, tower_g: 0 }];
+  draft._comps = p ? components(p).map(c => ({ component_id: c.component_id, qty: num(c.qty) || 1 })) : [{ component_id: '', qty: 1 }];
+  draft._mode = plateQty(draft) > 1 ? 'plate' : 'unit';
   draft._photoFile = null; draft._photoPreview = photoUrl(p);
   renderProductModal();
 }
+const gIn = (i, field, val, label) => '<span class="g"><input type="number" inputmode="decimal" step="any" min="0" data-rec="' + i + '" data-field="' + field + '" value="' + (num(val) > 0 ? num(val) : '') + '" placeholder="0" aria-label="' + label + '"></span>';
+function recipeRowsHTML(){
+  const p = draft; const n = p._mode === 'plate' ? plateQty(p) : 1;
+  let plateTotal = 0, mT = 0, pT = 0, tT = 0;
+  const rows = p._rec.map((r, i) => {
+    const tot = num(r.grams) + num(r.purge_g) + num(r.tower_g); plateTotal += tot; mT += num(r.grams); pT += num(r.purge_g); tT += num(r.tower_g);
+    return '<div class="slot">' + dotHTML(state.spools[r.spool_id]) + '<select data-rec="' + i + '" data-field="spool_id" aria-label="Color ' + (i + 1) + '">' + spoolOptions(r.spool_id) + '</select>' +
+      '<span class="gs">' + gIn(i, 'grams', r.grams, 'Model grams') + gIn(i, 'purge_g', r.purge_g, 'Purged grams') + gIn(i, 'tower_g', r.tower_g, 'Tower grams') + '<span class="g total" data-rec-total="' + i + '">' + (tot > 0 ? gnum(tot) : '') + '</span></span>' +
+      '<button class="iconbtn" data-action="rec-remove" data-i="' + i + '" aria-label="Remove color">×</button></div>';
+  }).join('');
+  return '<div class="head"><span></span><span class="lbl">Filament' + (n > 1 ? ' · whole plate' : '') + '</span><span class="gs"><span>Model</span><span>Purged</span><span>Tower</span><span>Total</span></span><span></span></div>' + rows +
+    '<div class="foot"><span></span><span class="lbl">' + (n > 1 ? 'Plate total' : 'Total') + '</span><span class="gs"><span>' + grams(mT) + '</span><span>' + grams(pT) + '</span><span>' + grams(tT) + '</span><span class="total">' + grams(plateTotal) + '</span></span><span></span></div>';
+}
+function compRowsHTML(){
+  const p = draft;
+  const rows = p._comps.map((c, i) => {
+    const cp = state.products[c.component_id]; const unit = cp ? productCost(cp).unit : 0; const url = cp ? photoUrl(cp) : '';
+    return '<div class="crow">' + (url ? '<img class="thumb" src="' + esc(url) + '" alt="">' : '<span class="thumb"></span>') +
+      '<select data-comp="' + i + '" data-field="component_id" aria-label="Product ' + (i + 1) + '">' + componentOptions(c.component_id) + '</select>' +
+      '<input type="number" inputmode="decimal" step="any" min="0" data-comp="' + i + '" data-field="qty" value="' + (num(c.qty) > 0 ? num(c.qty) : '') + '" placeholder="1" aria-label="Quantity">' +
+      '<span class="lc">' + (cp ? money(unit * (num(c.qty) || 1)) : '') + '</span>' +
+      '<button class="iconbtn" data-action="comp-remove" data-i="' + i + '" aria-label="Remove product">×</button></div>';
+  }).join('');
+  return '<div class="head"><span></span><span>Product</span><span>Qty</span><span>Cost</span><span></span></div>' + rows;
+}
+function componentOptions(selectedId){
+  const list = sortProducts(Object.values(state.products).filter(p => !p.archived && p.id !== draft.id));
+  let html = '<option value="">Choose a product</option>' + list.map(p => '<option value="' + esc(p.id) + '"' + (p.id === selectedId ? ' selected' : '') + '>' + esc(p.name) + (isPlayset(p) ? ' (playset)' : '') + ' · ' + money(productCost(p).unit) + '</option>').join('');
+  if (selectedId && !state.products[selectedId]) html += '<option value="' + esc(selectedId) + '" selected>(product no longer exists)</option>';
+  return html;
+}
+function perUnitHTML(c){
+  if (c.playset) return '';
+  return '<div class="perunit" id="perunit"><span>Per unit: <b>' + grams(c.g) + '</b> filament' + (c.wasteG > 0 ? ' <span style="color:var(--ink-3)">(' + grams(c.modelG) + ' model + ' + grams(c.wasteG) + ' purge &amp; tower)</span>' : '') + '</span>' + (c.hours > 0 ? '<span><b>' + (Math.round(c.hours * 100) / 100) + ' h</b> print time</span>' : '') + '</div>';
+}
 function renderProductModal(keepFocus){
-  const p = draft; const c = productCostDraft();
+  const p = draft; const c = productCostDraft(); const playset = p.kind === 'playset';
   const st = p.id ? productStatus(p) : 'ok';
   const v = k => (num(p[k]) > 0 ? num(p[k]) : '');
-  const html = '<div class="mh"><div><h3>' + (p.id ? 'Edit product' : 'New product') + '</h3><div class="sub">' + (p.id ? esc(p.name || '') + (p.barcode ? ' · label ' + esc(p.barcode) : '') : 'Photo, filaments, and the price you charge') + '</div></div></div>' +
+  const title = (p.id ? 'Edit ' : 'New ') + (playset ? 'playset' : 'product');
+  const right = playset ?
+      '<div class="field"><label>What goes in the set</label></div><div class="comps" id="comps">' + compRowsHTML() + '</div>' +
+      '<div style="margin-top:8px"><button class="btn ghost small" data-action="comp-add">Add a product</button></div>' +
+      '<p class="note" style="margin-top:10px">Making a set takes those products off their shelves and puts a set on this one. Their cost comes in automatically; add the set\'s own packaging or finishing below.</p>' +
+      '<div class="grid3" style="margin-top:14px">' + fld('p_fin', 'Finishing min per set', 'number', v('finishing_min')) + fld('p_pack', 'Packaging $ per set', 'number', v('packaging')) + '</div>'
+    :
+      '<div class="recipe" id="recipe">' + recipeRowsHTML() + '</div>' +
+      '<div style="margin-top:8px"><button class="btn ghost small" data-action="rec-add">Add a color</button></div>' +
+      '<div class="plate"><div class="seg" role="group" aria-label="How the numbers were entered"><button type="button" data-action="mode-unit" class="' + (p._mode === 'unit' ? 'on' : '') + '">Single item</button><button type="button" data-action="mode-plate" class="' + (p._mode === 'plate' ? 'on' : '') + '">Whole plate</button></div>' +
+        (p._mode === 'plate' ? fld('p_plate_qty', 'Units on the plate', 'number', plateQty(p), { hint: 'Everything above is divided by this' }) : '<div></div>') +
+        fld('p_plate_hours', p._mode === 'plate' ? 'Plate print time (h)' : 'Print time (h)', 'number', v('plate_hours'), { hint: 'From the slicer' }) + '</div>' +
+      perUnitHTML(c) +
+      '<div class="grid3" style="margin-top:14px">' + fld('p_fin', 'Finishing min per unit', 'number', v('finishing_min')) + fld('p_pack', 'Packaging $ per unit', 'number', v('packaging')) + '</div>';
+  const html = '<div class="mh"><div><h3>' + title + '</h3><div class="sub">' + (p.id ? esc(p.name || '') + (p.barcode ? ' · label ' + esc(p.barcode) : '') : playset ? 'Pick the products that go in it; the cost adds itself up' : 'Photo, the slicer\'s filament numbers, and the price you charge') + '</div></div></div>' +
     '<div class="pedit"><div>' +
       '<div class="photo" id="pPhoto">' + (p._photoPreview ? '<img src="' + esc(p._photoPreview) + '" alt="">' : '<span class="ph">Add a photo<br><small style="letter-spacing:0;text-transform:none;font-weight:400">Camera or library on an iPad</small></span>') + '</div>' +
       '<div class="photo-acts"><input type="file" id="pPhotoFile" accept="image/*" hidden><button class="btn ghost small" data-action="photo-pick">' + (p._photoPreview ? 'Change photo' : 'Add photo') + '</button>' + (p._photoPreview ? '<button class="btn ghost small" data-action="photo-clear">Remove</button>' : '') + '</div>' +
-      '<div class="fields" style="margin-top:12px">' + fld('p_name', 'Name', 'text', p.name || '', { wide: true, placeholder: 'What it is called on the shelf' }) + fld('p_sku', 'SKU', 'text', p.sku || '', { placeholder: 'PP-MINI' }) + fld('p_price', 'Sell price ($)', 'number', v('price')) +
+      '<div class="fields" style="margin-top:12px">' + fld('p_name', 'Name', 'text', p.name || '', { wide: true, placeholder: playset ? 'Dragon and egg playset' : 'What it is called on the shelf' }) + fld('p_sku', 'SKU', 'text', p.sku || '', { placeholder: playset ? 'SET-DRAGON' : 'PP-MINI' }) + fld('p_price', 'Sell price ($)', 'number', v('price')) +
       '<div class="field wide"><label for="p_desc">Description</label><textarea id="p_desc" placeholder="Variants, size, notes for the booth">' + esc(p.description || '') + '</textarea></div>' +
       fld('p_min', 'Shelf minimum', 'number', (p.reorder_at !== null && p.reorder_at !== undefined) ? p.reorder_at : '', { placeholder: 'default ' + num(state.settings.productReorderAt) }) + fld('p_barcode', 'Label code', 'text', p.barcode || '', { placeholder: 'made for you if blank', hint: 'Scan a boxed product\'s own barcode here to use it instead' }) + '</div>' +
-    '</div><div>' +
-      '<div class="field"><label>Filaments per unit</label></div><div class="recipe" id="recipe">' + p._rec.map((r, i) => '<div class="slot">' + dotHTML(state.spools[r.spool_id]) + '<select data-rec="' + i + '" data-field="spool_id" aria-label="Color ' + (i + 1) + '">' + spoolOptions(r.spool_id) + '</select><span class="g"><input type="number" inputmode="decimal" step="any" min="0" data-rec="' + i + '" data-field="grams" value="' + (num(r.grams) > 0 ? num(r.grams) : '') + '" placeholder="0"></span><button class="iconbtn" data-action="rec-remove" data-i="' + i + '" aria-label="Remove color">×</button></div>').join('') + '</div>' +
-      '<div style="margin-top:8px"><button class="btn ghost small" data-action="rec-add">Add a color</button></div>' +
-      '<div class="grid3" style="margin-top:14px">' +
-        fld('p_hours', 'Print hours per unit', 'number', v('hours_per_unit'), { hint: 'Plate time ÷ units on it' }) + fld('p_flush', 'Flushed g per unit', 'number', v('flush_g')) + fld('p_tower', 'Tower g per unit', 'number', v('tower_g')) +
-        fld('p_fin', 'Finishing min per unit', 'number', v('finishing_min')) + fld('p_pack', 'Packaging $ per unit', 'number', v('packaging')) +
-      '</div>' +
+    '</div><div>' + right +
       '<div class="costbox" id="costbox">' + costboxHTML(c) + '</div>' +
-      (p.id ? '<div class="stockline"><span class="onhand' + (st !== 'ok' ? ' low' : '') + '" id="pOnHand">' + num(p.on_hand) + '</span><span style="font-size:12.5px;color:var(--ink-2)">on the shelf</span><span style="flex:1"></span><input id="pN" type="number" inputmode="numeric" min="1" step="1" value="1" aria-label="How many"><button class="btn small" data-action="product-make">Made</button><button class="btn red small" data-action="product-sell">Sold</button><button class="btn ghost small" data-action="product-set">Set count</button></div><div id="pConfirm"></div>' : '') +
+      (p.id ? '<div class="stockline"><span class="onhand' + (st !== 'ok' ? ' low' : '') + '" id="pOnHand">' + num(p.on_hand) + '</span><span style="font-size:12.5px;color:var(--ink-2)">on the shelf</span><span style="flex:1"></span><input id="pN" type="number" inputmode="numeric" min="1" step="1" value="' + (playset ? 1 : plateQty(p)) + '" aria-label="How many"><button class="btn small" data-action="product-make">' + (playset ? 'Assembled' : 'Made') + '</button><button class="btn red small" data-action="product-sell">Sold</button><button class="btn ghost small" data-action="product-set">Set count</button></div><div id="pConfirm"></div>' : '') +
     '</div></div>' +
-    '<div class="acts">' + (p.id ? '<span style="display:flex;gap:6px"><button class="btn ghost" data-action="product-archive">' + (p.archived ? 'Unarchive' : 'Archive') + '</button><button class="btn danger" data-action="product-delete">Delete</button></span>' : '<span></span>') + '<span class="r"><button class="btn ghost" data-action="modal-close">Cancel</button><button class="btn" data-action="product-save">' + (p.id ? 'Save' : 'Add product') + '</button></span></div>';
+    '<div class="acts">' + (p.id ? '<span style="display:flex;gap:6px"><button class="btn ghost" data-action="product-archive">' + (p.archived ? 'Unarchive' : 'Archive') + '</button><button class="btn danger" data-action="product-delete">Delete</button></span>' : '<span></span>') + '<span class="r"><button class="btn ghost" data-action="modal-close">Cancel</button><button class="btn" data-action="product-save">' + (p.id ? 'Save' : playset ? 'Add playset' : 'Add product') + '</button></span></div>';
   if (keepFocus && !$('#modal').hidden) { const active = document.activeElement; const id = active && active.id; const sel = active && active.selectionStart; const box = $('#modal .box'); box.innerHTML = html; if (id) { const el = document.getElementById(id); if (el) { el.focus(); try { if (sel !== undefined && sel !== null) el.setSelectionRange(sel, sel); } catch (e) {} } } }
   else openModal(html, true);
 }
-function draftProduct(){ const d = Object.assign({}, draft); d.id = d.id || '__draft'; return d; }
+function draftProduct(){ const d = Object.assign({}, draft); d.id = d.id || '__draft'; if (d._mode === 'unit') d.plate_qty = 1; return d; }
 function productCostDraft(){
-  // Cost the editor's unsaved recipe by swapping it in for the saved one, then putting the saved one back.
-  const d = draftProduct(); const prev = state.pf[d.id];
-  state.pf[d.id] = draft._rec.map((r, i) => ({ spool_id: r.spool_id, grams: r.grams, position: i }));
+  // Cost the editor's unsaved recipe or contents by swapping them in for the saved ones, then putting those back.
+  const d = draftProduct(); const prevF = state.pf[d.id], prevC = state.pc[d.id];
+  state.pf[d.id] = draft._rec.map((r, i) => ({ spool_id: r.spool_id, grams: r.grams, purge_g: r.purge_g, tower_g: r.tower_g, position: i }));
+  state.pc[d.id] = draft._comps.map((c, i) => ({ component_id: c.component_id, qty: c.qty, position: i }));
   const c = productCost(d);
-  if (prev === undefined) delete state.pf[d.id]; else state.pf[d.id] = prev;
+  if (prevF === undefined) delete state.pf[d.id]; else state.pf[d.id] = prevF;
+  if (prevC === undefined) delete state.pc[d.id]; else state.pc[d.id] = prevC;
   return c;
 }
 function costboxHTML(c){
-  const colorRows = Object.keys(c.bySpool).map(id => { const sp = state.spools[id]; return '<tr><td>' + dotHTML(sp) + ' ' + esc(sp.color) + ' <span class="sub">' + grams(c.bySpool[id]) + ' × ' + money4(ppg(sp)) + '/g</span></td><td class="n">' + money(c.bySpool[id] * ppg(sp)) + '</td></tr>'; }).join('');
-  return '<div class="big"><span>Cost per unit</span><b>' + money(c.unit) + '</b></div>' +
+  const rows = c.playset
+    ? c.comps.map(x => '<tr><td>' + esc(x.cp.name) + ' <span class="sub">' + (x.qty === 1 ? '' : x.qty + ' × ') + money(x.unit) + '</span></td><td class="n">' + money(x.cost) + '</td></tr>').join('')
+    : c.rows.map(x => '<tr><td>' + dotHTML(x.sp) + ' ' + esc(x.sp.color) + ' <span class="sub">' + grams(x.tot) + (x.purge + x.tower > 0 ? ' (' + grams(x.model) + ' + ' + grams(x.purge + x.tower) + ' waste)' : '') + ' × ' + money4(ppg(x.sp)) + '/g</span></td><td class="n">' + money(x.cost) + '</td></tr>').join('');
+  return '<div class="big"><span>Cost per ' + (c.playset ? 'set' : 'unit') + '</span><b>' + money(c.unit) + '</b></div>' +
     '<div class="margin">' + (c.margin !== null ? 'Margin at ' + money(c.price) + ': <b>' + Math.round(c.margin) + '%</b> · ' : '') + (c.suggested ? num(state.settings.marginPct) + '% margin needs ' + money(c.suggested) : '') + '</div>' +
-    '<div class="twrap"><table class="breakdown" style="margin-top:8px">' + colorRows + (c.missing.length ? '<tr><td class="sub" style="color:var(--red)">A color here is not on the rack</td><td class="n">—</td></tr>' : '') +
-    ((c.flushG + c.towerG) > 0 ? '<tr><td>Flush + tower <span class="sub">' + grams(c.flushG + c.towerG) + ' at ' + money4(c.avg) + '/g</span></td><td class="n">' + money((c.flushG + c.towerG) * c.avg) + '</td></tr>' : '') +
-    (c.otherG > 0 ? '<tr><td>Other waste <span class="sub">' + num(state.settings.otherWastePct) + '%</span></td><td class="n">' + money(c.material * num(state.settings.otherWastePct) / 100) + '</td></tr>' : '') +
-    (c.energy > 0 ? '<tr><td>Energy <span class="sub">' + num(draft ? draft.hours_per_unit : 0) + ' h × ' + money(num(state.settings.energyRate)) + '</span></td><td class="n">' + money(c.energy) + '</td></tr>' : '') +
+    '<div class="twrap"><table class="breakdown" style="margin-top:8px">' + rows + (c.missing.length ? '<tr><td class="sub" style="color:var(--red)">' + (c.playset ? 'A product in this set no longer exists' : 'A color here is not on the rack') + '</td><td class="n">—</td></tr>' : '') +
+    (c.otherWaste > 0 ? '<tr><td>Other waste <span class="sub">' + num(state.settings.otherWastePct) + '%</span></td><td class="n">' + money(c.otherWaste) + '</td></tr>' : '') +
+    (c.energy > 0 ? '<tr><td>Energy <span class="sub">' + (Math.round(c.hours * 100) / 100) + ' h × ' + money(num(state.settings.energyRate)) + '</span></td><td class="n">' + money(c.energy) + '</td></tr>' : '') +
     (c.failure > 0 ? '<tr><td>Reprint allowance</td><td class="n">' + money(c.failure) + '</td></tr>' : '') +
     (c.labor > 0 ? '<tr><td>Finishing</td><td class="n">' + money(c.labor) + '</td></tr>' : '') +
     (c.packaging > 0 ? '<tr><td>Packaging</td><td class="n">' + money(c.packaging) + '</td></tr>' : '') + '</table></div>';
 }
-function refreshCostbox(){ const box = $('#costbox'); if (box) box.innerHTML = costboxHTML(productCostDraft()); }
+function refreshCostbox(){
+  const c = productCostDraft(); const box = $('#costbox'); if (box) box.innerHTML = costboxHTML(c);
+  const pu = $('#perunit'); if (pu) pu.outerHTML = perUnitHTML(c);
+  if (draft.kind !== 'playset') {
+    let mT = 0, pT = 0, tT = 0, all = 0;
+    draft._rec.forEach((r, i) => { const tot = num(r.grams) + num(r.purge_g) + num(r.tower_g); mT += num(r.grams); pT += num(r.purge_g); tT += num(r.tower_g); all += tot; const el = document.querySelector('[data-rec-total="' + i + '"]'); if (el) el.textContent = tot > 0 ? gnum(tot) : ''; });
+    const foot = document.querySelectorAll('#recipe .foot .gs span'); if (foot.length === 4) { foot[0].textContent = grams(mT); foot[1].textContent = grams(pT); foot[2].textContent = grams(tT); foot[3].textContent = grams(all); }
+  } else {
+    draft._comps.forEach((cmp, i) => { const cp = state.products[cmp.component_id]; const el = document.querySelector('#comps .crow:nth-of-type(' + (i + 2) + ') .lc'); if (el) el.textContent = cp ? money(productCost(cp).unit * (num(cmp.qty) || 1)) : ''; });
+  }
+}
 function readProductForm(){
   draft.name = $('#p_name').value.trim(); draft.sku = $('#p_sku').value.trim() || null; draft.price = $('#p_price').value === '' ? null : num($('#p_price').value);
   draft.description = $('#p_desc').value.trim(); draft.reorder_at = $('#p_min').value === '' ? null : Math.round(num($('#p_min').value)); draft.barcode = $('#p_barcode').value.trim() || null;
-  draft.hours_per_unit = num($('#p_hours').value); draft.flush_g = num($('#p_flush').value); draft.tower_g = num($('#p_tower').value); draft.finishing_min = num($('#p_fin').value); draft.packaging = num($('#p_pack').value);
+  draft.finishing_min = num($('#p_fin').value); draft.packaging = num($('#p_pack').value);
+  const pq = $('#p_plate_qty'); draft.plate_qty = draft._mode === 'plate' && pq ? Math.max(1, Math.round(num(pq.value)) || 1) : 1;
+  const ph = $('#p_plate_hours'); if (ph) draft.plate_hours = num(ph.value);
+  draft.hours_per_unit = 0; draft.flush_g = 0; draft.tower_g = 0;
 }
 async function resizeImage(file){
   return new Promise((resolve, reject) => {
@@ -534,15 +641,16 @@ async function resizeImage(file){
   });
 }
 async function saveProductFromModal(){
-  readProductForm(); if (!draft.name) { toast('Give the product a name', true); $('#p_name').focus(); return; }
-  const isNew = !draft.id; const row = Object.assign({}, draft); delete row._rec; delete row._photoFile; delete row._photoPreview;
+  readProductForm(); if (!draft.name) { toast('Give it a name', true); $('#p_name').focus(); return; }
+  const isNew = !draft.id; const row = Object.assign({}, draft); delete row._rec; delete row._comps; delete row._mode; delete row._photoFile; delete row._photoPreview;
   if (!row.barcode) row.barcode = row.sku || code('P-');
   if (isNew) delete row.id;
   try {
     const saved = await saveProduct(row);
     if (draft._photoFile) { const blob = await resizeImage(draft._photoFile); const path = saved.id + '/' + Date.now() + '.jpg'; const up = await sb.storage.from(CONFIG.photoBucket).upload(path, blob, { contentType: 'image/jpeg', upsert: true }); if (up.error) { fail(up.error, 'Could not upload the photo'); } else { const old = saved.photo_path; saved.photo_path = path; await saveProduct(saved); if (old && old !== path) removePhotos([old]); } }
     else if (draft._photoPreview === '' && saved.photo_path) { const old = saved.photo_path; saved.photo_path = null; await saveProduct(saved); removePhotos([old]); }
-    await saveRecipe(saved.id, draft._rec);
+    if (draft.kind === 'playset') { await saveComponents(saved.id, draft._comps); if (!isNew) await saveRecipe(saved.id, []); }
+    else { await saveRecipe(saved.id, draft._rec); if (!isNew && (state.pc[saved.id] || []).length) await saveComponents(saved.id, []); }
     closeModal(); toast(isNew ? saved.name + ' added' : 'Saved'); renderAll();
   } catch (e) {}
 }
@@ -671,12 +779,16 @@ document.addEventListener('click', async e => {
     for (const p of ps) await deleteProduct(p.id); for (const s of ss) await deleteSpool(s.id);
     toast('Examples removed'); renderAll(); return;
   }
-  if (a === 'product-new') { openProductModal(null); return; }
+  if (a === 'product-new') { openProductModal(null, 'item'); return; }
+  if (a === 'playset-new') { openProductModal(null, 'playset'); return; }
+  if (a === 'mode-unit' || a === 'mode-plate') { readProductForm(); draft._mode = a === 'mode-unit' ? 'unit' : 'plate'; if (draft._mode === 'plate' && plateQty(draft) < 2) draft.plate_qty = 2; renderProductModal(true); return; }
+  if (a === 'comp-add') { readProductForm(); draft._comps.push({ component_id: '', qty: 1 }); renderProductModal(true); return; }
+  if (a === 'comp-remove') { readProductForm(); draft._comps.splice(+el.dataset.i, 1); if (!draft._comps.length) draft._comps.push({ component_id: '', qty: 1 }); renderProductModal(true); return; }
   if (a === 'product-open') { openProductModal(id); return; }
   if (a === 'photo-pick') { $('#pPhotoFile').click(); return; }
   if (a === 'photo-clear') { draft._photoFile = null; draft._photoPreview = ''; readProductForm(); renderProductModal(true); return; }
-  if (a === 'rec-add') { readProductForm(); draft._rec.push({ spool_id: '', grams: 0 }); renderProductModal(true); return; }
-  if (a === 'rec-remove') { readProductForm(); draft._rec.splice(+el.dataset.i, 1); if (!draft._rec.length) draft._rec.push({ spool_id: '', grams: 0 }); renderProductModal(true); return; }
+  if (a === 'rec-add') { readProductForm(); draft._rec.push({ spool_id: '', grams: 0, purge_g: 0, tower_g: 0 }); renderProductModal(true); return; }
+  if (a === 'rec-remove') { readProductForm(); draft._rec.splice(+el.dataset.i, 1); if (!draft._rec.length) draft._rec.push({ spool_id: '', grams: 0, purge_g: 0, tower_g: 0 }); renderProductModal(true); return; }
   if (a === 'product-save') { await saveProductFromModal(); return; }
   if (a === 'product-archive') { readProductForm(); draft.archived = !draft.archived; await saveProductFromModal(); return; }
   if (a === 'product-delete') { $('#pConfirm').innerHTML = '<div class="confirm">Delete <b>' + esc(draft.name) + '</b> and its recipe? Its history stays in the activity log.<div class="acts"><button class="btn red" data-action="product-delete-do">Delete</button><button class="btn ghost" data-action="product-delete-cancel">Keep it</button></div></div>'; return; }
@@ -684,11 +796,11 @@ document.addEventListener('click', async e => {
   if (a === 'product-delete-do') { await deleteProduct(draft.id); closeModal(); toast('Deleted'); renderAll(); return; }
   if (a === 'product-make' || a === 'product-sell' || a === 'product-set') {
     const p = state.products[draft.id]; if (!p) return; const n = Math.max(0, Math.round(num($('#pN').value)));
-    if (a === 'product-make') { if (n < 1) return; const { c, pulls } = spoolPullFor(p, n); const lines = pulls.map(pl => { const sp = state.spools[pl.spoolId]; return esc(sp.color) + ' ' + grams(pl.grams); }); $('#pConfirm').innerHTML = '<div class="confirm">Make <b>' + n + '</b>: pull ' + (lines.join(' · ') || 'no filament (recipe is empty)') + ' off the rack, cost ' + money(c.unit * n) + '.<div class="acts"><button class="btn red" data-action="product-make-do" data-n="' + n + '">Made ' + n + '</button><button class="btn ghost" data-action="product-delete-cancel">Cancel</button></div></div>'; return; }
+    if (a === 'product-make') { if (n < 1) return; const { c, pulls, parts } = spoolPullFor(p, n); const lines = pulls.map(pl => { const sp = state.spools[pl.spoolId]; return esc(sp.color) + ' ' + grams(pl.grams); }); const partLines = parts.map(pt => { const cp = state.products[pt.productId]; const have = cp ? num(cp.on_hand) : 0; return pt.qty + ' × ' + esc(pt.name) + (have < pt.qty ? ' <b style="color:var(--red)">(only ' + have + ' on the shelf)</b>' : ''); }); const what = isPlayset(p) ? 'take ' + (partLines.join(' · ') || 'nothing (the set is empty)') + ' off the shelf' : 'pull ' + (lines.join(' · ') || 'no filament (no colors entered)') + ' off the rack'; $('#pConfirm').innerHTML = '<div class="confirm">' + (isPlayset(p) ? 'Assemble' : 'Make') + ' <b>' + n + '</b>: ' + what + ', cost ' + money(c.unit * n) + '.<div class="acts"><button class="btn red" data-action="product-make-do" data-n="' + n + '">' + (isPlayset(p) ? 'Assembled ' : 'Made ') + n + '</button><button class="btn ghost" data-action="product-delete-cancel">Cancel</button></div></div>'; return; }
     if (a === 'product-sell') { if (n < 1) return; await sellProduct(p, n); $('#pOnHand').textContent = num(p.on_hand); $('#pConfirm').innerHTML = ''; toast('Sold ' + n + ', ' + num(p.on_hand) + ' left'); renderProducts(); renderLog(); renderReorder(); return; }
     if (a === 'product-set') { await adjustProduct(p, n, 'set on product'); $('#pOnHand').textContent = num(p.on_hand); toast('Shelf count set to ' + n); renderProducts(); renderLog(); renderReorder(); return; }
   }
-  if (a === 'product-make-do') { const p = state.products[draft.id]; const n = num(el.dataset.n); const r = await makeProduct(p, n); $('#pOnHand').textContent = num(p.on_hand); $('#pConfirm').innerHTML = ''; toast('Made ' + n + ', ' + num(p.on_hand) + ' on the shelf' + (r.shorts.length ? ' · ' + r.shorts.join(', ') : '')); renderAll(); return; }
+  if (a === 'product-make-do') { const p = state.products[draft.id]; const n = num(el.dataset.n); const r = await makeProduct(p, n); $('#pOnHand').textContent = num(p.on_hand); $('#pConfirm').innerHTML = ''; toast((isPlayset(p) ? 'Assembled ' : 'Made ') + n + ', ' + num(p.on_hand) + ' on the shelf' + (r.shorts.length ? ' · ' + r.shorts.join(', ') : '')); renderAll(); return; }
   if (a === 'log-undo') { const m = state.movements.find(x => x.id === id); if (!m) return; await undoMovement(m); toast('Undone'); renderAll(); return; }
   if (a === 'log-export') { if (!state.movements.length) { toast('Nothing logged yet'); return; } download('mostly3d-activity.csv', logCSV(), 'text/csv'); return; }
   if (a === 'reorder-copy') { copyText(reorderText(), 'Reorder list copied'); return; }
@@ -711,6 +823,7 @@ document.addEventListener('change', async e => {
   const el = e.target;
   if (el.id === 'pPhotoFile') { const f = el.files && el.files[0]; if (!f) return; draft._photoFile = f; draft._photoPreview = URL.createObjectURL(f); readProductForm(); renderProductModal(true); return; }
   if (el.dataset.rec !== undefined && el.dataset.field === 'spool_id') { readProductForm(); draft._rec[+el.dataset.rec].spool_id = el.value; renderProductModal(true); return; }
+  if (el.dataset.comp !== undefined && el.dataset.field === 'component_id') { readProductForm(); draft._comps[+el.dataset.comp].component_id = el.value; renderProductModal(true); return; }
 });
 document.addEventListener('input', e => {
   const el = e.target;
@@ -718,8 +831,9 @@ document.addEventListener('input', e => {
   if (el.id === 'productSearch') { state.ui.productQ = el.value; renderProducts(); return; }
   if (el.id === 'm_hexpick') { const h = $('#m_hex'); if (h) h.value = el.value.toUpperCase(); return; }
   if (el.id === 'm_hex') { const v = el.value.trim(); if (/^#[0-9a-fA-F]{6}$/.test(v)) { const pk = $('#m_hexpick'); if (pk) pk.value = v.toLowerCase(); } return; }
-  if (el.dataset.rec !== undefined && el.dataset.field === 'grams') { draft._rec[+el.dataset.rec].grams = num(el.value); refreshCostbox(); return; }
-  if (['p_hours', 'p_flush', 'p_tower', 'p_fin', 'p_pack', 'p_price'].indexOf(el.id) >= 0) { readProductForm(); refreshCostbox(); return; }
+  if (el.dataset.rec !== undefined && ['grams', 'purge_g', 'tower_g'].indexOf(el.dataset.field) >= 0) { draft._rec[+el.dataset.rec][el.dataset.field] = num(el.value); refreshCostbox(); return; }
+  if (el.dataset.comp !== undefined && el.dataset.field === 'qty') { draft._comps[+el.dataset.comp].qty = num(el.value); refreshCostbox(); return; }
+  if (['p_plate_qty', 'p_plate_hours', 'p_fin', 'p_pack', 'p_price'].indexOf(el.id) >= 0) { readProductForm(); refreshCostbox(); return; }
   if (el.dataset.setting) { state.settings[el.dataset.setting] = el.value === '' ? 0 : num(el.value); saveSettingsSoon(); renderProducts(); renderRack(); renderReorder(); return; }
   if (el.dataset.lineprice) {
     const key = el.dataset.lineprice; if (!LINE[key]) return;
