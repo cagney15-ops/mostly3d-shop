@@ -62,6 +62,8 @@ nav.steps{position:sticky;top:0;z-index:9;background:var(--paper);border-bottom:
 nav.steps::-webkit-scrollbar{display:none}
 nav.steps a{text-decoration:none;font-size:12.5px;font-weight:500;letter-spacing:.08em;text-transform:uppercase;padding:8px 13px;border:1px solid var(--line-2);border-radius:999px;white-space:nowrap;color:var(--ink-2)}
 nav.steps a:hover{color:var(--ink);border-color:var(--ink)}
+nav.steps a.on{background:var(--ink);color:#fff;border-color:var(--ink)}
+nav.steps a.on .n{background:#fff;color:var(--red)}
 nav.steps a .n{display:inline-block;min-width:16px;height:16px;line-height:16px;text-align:center;border-radius:999px;background:var(--red);color:#fff;font-size:10px;font-weight:600;margin-left:6px;padding:0 4px;vertical-align:1px}
 .scanbar{position:sticky;top:56px;z-index:8;background:var(--paper);border-bottom:1px solid var(--line);display:flex;align-items:center;gap:8px;padding-block:8px;flex-wrap:wrap}
 .scanbar .lbl{font-size:11px;letter-spacing:.16em;text-transform:uppercase;font-weight:600;color:var(--ink-2);margin-right:4px}
@@ -78,8 +80,10 @@ nav.steps a .n{display:inline-block;min-width:16px;height:16px;line-height:16px;
 .scanbar .flash b{color:var(--red)}
 
 /* sections */
-section.sec{padding-block:36px 10px;scroll-margin-top:118px;border-bottom:1px solid var(--line)}
+section.sec{padding-block:30px 10px;scroll-margin-top:118px;border-bottom:1px solid var(--line)}
 section.sec:last-of-type{border-bottom:0}
+section.sec[hidden]{display:none}
+section.sec.tab-last{border-bottom:0}
 .sec-head{display:flex;justify-content:space-between;align-items:flex-end;gap:18px;flex-wrap:wrap;margin-bottom:18px}
 .eyebrow{font-size:11px;letter-spacing:.22em;text-transform:uppercase;font-weight:600;color:var(--red);margin-bottom:6px}
 h2{font-family:var(--font-display);font-weight:400;font-size:30px;line-height:1.1;font-variation-settings:"opsz" 48}
@@ -329,6 +333,53 @@ table.breakdown tr.group td{color:var(--ink-2);font-size:11px;letter-spacing:.14
 .label .ln{font-family:var(--font-display);font-size:14px;text-align:center;line-height:1.15}
 .label .ls{font-size:10px;letter-spacing:.12em;text-transform:uppercase;color:#555}
 .label svg{max-width:100%;height:auto}
+
+/* home summary */
+.home-grid{display:grid;grid-template-columns:minmax(0,1.1fr) minmax(0,.9fr);gap:22px;margin-top:6px}
+@media (max-width:900px){.home-grid{grid-template-columns:1fr}}
+.panel{border:1px solid var(--line);border-radius:14px;padding:16px 18px;background:var(--paper)}
+.panel h3{font-family:var(--font-display);font-weight:400;font-size:20px;margin:0 0 4px}
+.panel .ph-sub{font-size:12.5px;color:var(--ink-2);margin-bottom:10px}
+.panel .list td{padding:7px 6px}
+.panel .more{display:inline-block;margin-top:10px;font-size:12.5px;color:var(--red);text-decoration:none;border-bottom:1px solid transparent;cursor:pointer;background:none;border-top:0;border-left:0;border-right:0;padding:0;font-family:inherit}
+.panel .more:hover{border-bottom-color:var(--red)}
+.attn{display:flex;gap:10px;align-items:center;padding:8px 0;border-bottom:1px solid var(--line);font-size:13.5px}
+.attn:last-child{border-bottom:0}
+.attn .what{flex:1;min-width:0}
+.attn .what .sub{display:block;font-size:11.5px;color:var(--ink-3)}
+.attn .tag{flex:none}
+.tiles.home{grid-template-columns:repeat(4,minmax(0,1fr))}
+@media (max-width:900px){.tiles.home{grid-template-columns:repeat(2,minmax(0,1fr))}}
+.tile-num.link{cursor:pointer;text-align:left;font-family:inherit;font-size:inherit;color:inherit;width:100%;display:block;transition:border-color .15s}
+.tile-num.link:hover{border-color:var(--ink)}
+/* parts & accessories */
+.parts-tools{display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin-bottom:14px}
+.parts-tools input[type=search]{flex:1 1 180px;min-width:0;border:1px solid var(--line-2);border-radius:999px;padding:8px 14px;background:var(--paper)}
+.plist{display:flex;flex-direction:column;gap:6px}
+.prow{display:grid;grid-template-columns:44px minmax(0,1.6fr) minmax(0,1fr) auto auto 36px;gap:12px;align-items:center;border:1px solid var(--line);border-radius:12px;padding:8px 12px;background:var(--paper)}
+.prow.low{border-color:var(--red)}
+.prow .thumb{width:44px;height:44px;border-radius:8px;background:var(--panel);object-fit:cover;display:grid;place-items:center;border:1px solid var(--line);color:var(--ink-3);font-size:10px;letter-spacing:.1em;text-transform:uppercase;overflow:hidden;padding:0;cursor:pointer;font-family:inherit}
+.prow .thumb img{width:100%;height:100%;object-fit:cover}
+.prow .nm{font-weight:500;font-size:14px;line-height:1.2}
+.prow .meta{font-size:11.5px;color:var(--ink-3);margin-top:2px;display:flex;gap:6px;flex-wrap:wrap;align-items:center}
+.prow .fits{display:flex;gap:4px;flex-wrap:wrap}
+.prow .fits span,.pbadge{font-size:10px;letter-spacing:.08em;text-transform:uppercase;font-weight:600;color:var(--ink-2);background:var(--panel-2);border-radius:999px;padding:2px 8px}
+.prow .fits span.any{background:transparent;border:1px dashed var(--line-2)}
+.prow .qty{display:inline-flex;align-items:center;gap:4px}
+.prow .qty b{font-family:var(--font-display);font-size:22px;font-weight:400;min-width:34px;text-align:center;font-variant-numeric:tabular-nums}
+.prow.low .qty b{color:var(--red)}
+.prow .qty .iconbtn{border-color:var(--line-2);width:30px;height:30px;font-size:16px}
+.prow .cost{font-size:12.5px;color:var(--ink-2);text-align:right;white-space:nowrap}
+.prow .cost b{display:block;color:var(--ink);font-weight:500;font-size:14px}
+@media (max-width:760px){.prow{grid-template-columns:44px minmax(0,1fr) auto 36px}.prow .cat,.prow .cost{display:none}}
+.printers-row{display:flex;gap:6px;flex-wrap:wrap;align-items:center}
+.printer-list{display:flex;flex-direction:column;gap:8px;margin-top:10px}
+.printer-list .prl{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr) auto;gap:8px;align-items:center}
+.printer-list .prl input{border:1px solid var(--line-2);border-radius:8px;padding:7px 10px;min-width:0;width:100%;background:var(--paper)}
+.checks{display:flex;flex-wrap:wrap;gap:6px;margin-top:4px}
+.checks label{display:inline-flex;align-items:center;gap:6px;border:1px solid var(--line-2);border-radius:999px;padding:5px 11px;font-size:12.5px;cursor:pointer;user-select:none}
+.checks label.on{background:var(--ink);color:#fff;border-color:var(--ink)}
+.checks input{position:absolute;opacity:0;width:0;height:0}
 @media print{
   body{padding:0}
   header.brand,nav.steps,.scanbar,footer,.modal,.toast,.auth,section.sec:not(.printing),.sec-head,.labels-tools,.no-print{display:none!important}
@@ -376,14 +427,14 @@ footer .script{font-size:22px;color:var(--red)}
     <div class="status" id="status"><span class="led"></span><span id="statusText">Opening</span><button type="button" id="signOut" title="Sign out">sign out</button></div>
   </header>
 
-  <nav class="steps" aria-label="Sections">
-    <a href="#products">Products<span class="n" id="navProductsLow" hidden>0</span></a>
-    <a href="#rack">Rack<span class="n" id="navLow" hidden>0</span></a>
-    <a href="#wall">Color wall</a>
-    <a href="#log">Activity</a>
-    <a href="#reorder">Reorder<span class="n" id="navReorder" hidden>0</span></a>
-    <a href="#labels">Labels</a>
-    <a href="#settings">Settings</a>
+  <nav class="steps" aria-label="Pages">
+    <a href="#home" data-tab="home">Home<span class="n" id="navReorder" hidden>0</span></a>
+    <a href="#products" data-tab="products">Products<span class="n" id="navProductsLow" hidden>0</span></a>
+    <a href="#filament" data-tab="filament">Filament<span class="n" id="navLow" hidden>0</span></a>
+    <a href="#parts" data-tab="parts">Parts &amp; accessories<span class="n" id="navPartsLow" hidden>0</span></a>
+    <a href="#log" data-tab="log">Activity</a>
+    <a href="#labels" data-tab="labels">Labels</a>
+    <a href="#settings" data-tab="settings">Settings</a>
   </nav>
 
   <div class="scanbar" id="scanbar">
@@ -395,7 +446,22 @@ footer .script{font-size:22px;color:var(--red)}
   </div>
 
   <main>
-    <section id="products" class="sec">
+    <section id="home" class="sec" data-tab="home">
+      <div class="sec-head">
+        <div>
+          <p class="eyebrow">Today</p>
+          <h2>The shop at a glance</h2>
+          <p class="lede">Products on the shelf, filament on the rack, parts in the drawer, and what moved this month. Anything that needs attention is listed below.</p>
+        </div>
+      </div>
+      <div class="tiles home" id="homeTiles"></div>
+      <div class="home-grid">
+        <div class="panel"><h3>Needs attention</h3><div class="ph-sub">Below reorder point or shelf minimum</div><div id="homeAttention"></div></div>
+        <div class="panel"><h3>Recent activity</h3><div class="ph-sub">The last few things that moved</div><div id="homeRecent"></div></div>
+      </div>
+    </section>
+
+    <section id="products" class="sec" data-tab="products">
       <div class="sec-head">
         <div>
           <p class="eyebrow">Catalog</p>
@@ -409,7 +475,7 @@ footer .script{font-size:22px;color:var(--red)}
       <div class="products" id="productGrid"></div>
     </section>
 
-    <section id="rack" class="sec">
+    <section id="rack" class="sec" data-tab="filament">
       <div class="sec-head">
         <div>
           <p class="eyebrow">Filament</p>
@@ -424,7 +490,7 @@ footer .script{font-size:22px;color:var(--red)}
       <p class="fine">Rolls on hand counts the open roll. The bar under each spool is the open roll; a spool turns red when what is left falls under its reorder point.</p>
     </section>
 
-    <section id="wall" class="sec">
+    <section id="wall" class="sec" data-tab="filament">
       <div class="sec-head">
         <div>
           <p class="eyebrow">Add stock</p>
@@ -441,7 +507,21 @@ footer .script{font-size:22px;color:var(--red)}
       <p class="fine">Swatches use Bambu Lab's published display hex codes. Dawn Radiance, South Beach and Mystic Magenta are approximations. The price in each line header is what every spool in that line costs unless you give a spool its own price.</p>
     </section>
 
-    <section id="log" class="sec">
+    <section id="parts" class="sec" data-tab="parts">
+      <div class="sec-head">
+        <div>
+          <p class="eyebrow">Maintenance</p>
+          <h2>Parts &amp; accessories</h2>
+          <p class="lede">Nozzles, hotends, belts, plates, tools, consumables: everything that is not filament or a product. Each part can be tied to the printer models it fits, so a scan tells you exactly which machine it belongs to.</p>
+        </div>
+        <div class="sec-actions"><button class="btn" data-action="part-new">New part</button><button class="btn ghost" data-action="printers-manage">Printers</button></div>
+      </div>
+      <div class="tiles" id="partTiles"></div>
+      <div class="parts-tools"><div class="chips" id="partChips"></div><input id="partSearch" type="search" placeholder="Search parts" aria-label="Search parts" autocomplete="off"></div>
+      <div class="plist" id="partList"></div>
+    </section>
+
+    <section id="log" class="sec" data-tab="log">
       <div class="sec-head">
         <div>
           <p class="eyebrow">History</p>
@@ -455,19 +535,19 @@ footer .script{font-size:22px;color:var(--red)}
       <div class="twrap" id="logList"></div>
     </section>
 
-    <section id="reorder" class="sec">
+    <section id="reorder" class="sec" data-tab="home">
       <div class="sec-head">
         <div>
           <p class="eyebrow">Restock</p>
           <h2>Reorder list</h2>
-          <p class="lede">Spools under their reorder point and products below their shelf minimum.</p>
+          <p class="lede">Spools under their reorder point, products below their shelf minimum, and parts running out.</p>
         </div>
         <div class="sec-actions"><button class="btn ghost" data-action="reorder-copy">Copy list</button></div>
       </div>
       <div class="twrap" id="reorderList"></div>
     </section>
 
-    <section id="labels" class="sec">
+    <section id="labels" class="sec" data-tab="labels">
       <div class="sec-head">
         <div>
           <p class="eyebrow">Scanning</p>
@@ -480,7 +560,7 @@ footer .script{font-size:22px;color:var(--red)}
       <div class="labels" id="labelGrid"></div>
     </section>
 
-    <section id="settings" class="sec">
+    <section id="settings" class="sec" data-tab="settings">
       <div class="sec-head">
         <div>
           <p class="eyebrow">Shop</p>

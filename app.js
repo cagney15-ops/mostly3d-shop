@@ -5,15 +5,15 @@ import { LINES, LINE, CATALOG, CAT } from './catalog.js';
 const sb = createClient(CONFIG.supabaseUrl, CONFIG.supabaseAnonKey, { auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: true } });
 
 /* ---------------- state ---------------- */
-const DEFAULT_SETTINGS = { energyRate: 0.15, otherWastePct: 0, failurePct: 0, laborRate: 0, marginPct: 50, reorderAt: 250, productReorderAt: 3, linePrices: {} };
+const DEFAULT_SETTINGS = { energyRate: 0.15, otherWastePct: 0, failurePct: 0, laborRate: 0, marginPct: 50, reorderAt: 250, productReorderAt: 3, partReorderAt: 2, linePrices: {} };
 const COLLAPSE_KEY = 'mostly3d.wall.collapsed';
 function loadCollapsed(){ try { const v = JSON.parse(localStorage.getItem(COLLAPSE_KEY) || '[]'); return new Set(Array.isArray(v) ? v : []); } catch (e) { return new Set(); } }
 function saveCollapsed(){ try { localStorage.setItem(COLLAPSE_KEY, JSON.stringify(Array.from(state.ui.collapsed))); } catch (e) {} }
 const state = {
   session: null, allowed: null, loaded: false,
   settings: Object.assign({}, DEFAULT_SETTINGS),
-  spools: {}, products: {}, pf: {}, pc: {}, movements: [], gtin: {}, allowedUsers: [],
-  ui: { line: 'all', q: '', rackLine: 'all', lowOnly: false, productQ: '', productFilter: 'all', logKind: 'all', labelKind: 'spools', collapsed: loadCollapsed(), scanMode: 'lookup', recovery: false }
+  spools: {}, products: {}, pf: {}, pc: {}, parts: {}, printers: {}, pp: {}, movements: [], gtin: {}, allowedUsers: [],
+  ui: { line: 'all', q: '', rackLine: 'all', lowOnly: false, productQ: '', productFilter: 'all', logKind: 'all', labelKind: 'spools', collapsed: loadCollapsed(), scanMode: 'lookup', recovery: false, tab: 'home', partPrinter: 'all', partCat: 'all', partQ: '', partLowOnly: false }
 };
 
 /* ---------------- utils ---------------- */
@@ -61,6 +61,12 @@ function reorderPoint(sp){ return (sp.reorder_at !== undefined && sp.reorder_at 
 function spoolStatus(sp){ const a = spoolAvailable(sp); if (a <= 0.5) return 'out'; if (a < reorderPoint(sp)) return 'low'; return 'ok'; }
 function productMin(p){ return (p.reorder_at !== undefined && p.reorder_at !== null && p.reorder_at !== '') ? num(p.reorder_at) : num(state.settings.productReorderAt); }
 function productStatus(p){ const n = num(p.on_hand); if (n <= 0) return 'out'; if (n < productMin(p)) return 'low'; return 'ok'; }
+function partMin(pt){ return (pt.reorder_at !== undefined && pt.reorder_at !== null && pt.reorder_at !== '') ? num(pt.reorder_at) : num(state.settings.partReorderAt); }
+function partStatus(pt){ const n = num(pt.on_hand); if (n <= 0) return 'out'; if (n < partMin(pt)) return 'low'; return 'ok'; }
+function partPrinters(pt){ return (state.pp[pt.id] || []).map(id => state.printers[id]).filter(Boolean); }
+function sortPrinters(list){ return list.slice().sort((a, b) => num(a.position) - num(b.position) || String(a.name).localeCompare(String(b.name))); }
+function sortParts(list){ return list.slice().sort((a, b) => String(a.name).localeCompare(String(b.name))); }
+const PART_CATS = ['Nozzle', 'Hotend', 'Extruder', 'Build plate', 'Belt', 'Bearing & rod', 'Fan', 'PTFE & tubing', 'Electronics', 'AMS', 'Lubricant & cleaning', 'Fastener', 'Tool', 'Packaging', 'Other'];
 function consume(sp, g){
   let need = Math.max(0, g); const roll = effGrams(sp); let qty = rollsOf(sp); let left = openLeft(sp);
   while (need > 0.0001 && qty > 0) {
@@ -161,17 +167,20 @@ function photoUrl(p){ if (!p || !p.photo_path) return ''; return sb.storage.from
 /* ---------------- data ---------------- */
 async function loadAll(){
   const startedAt = Date.now();
-  const [s, sp, pr, pf, pc, mv, gt, au] = await Promise.all([
+  const [s, sp, pr, pf, pc, pa, pi, ppx, mv, gt, au] = await Promise.all([
     sb.from('shop_settings').select('data').eq('id', 1).maybeSingle(),
     sb.from('spools').select('*'),
     sb.from('products').select('*'),
     sb.from('product_filaments').select('*'),
     sb.from('product_components').select('*'),
+    sb.from('parts').select('*'),
+    sb.from('printers').select('*').order('position'),
+    sb.from('part_printers').select('*'),
     sb.from('movements').select('*').order('created_at', { ascending: false }).limit(400),
     sb.from('gtin_map').select('*'),
     sb.from('allowed_users').select('*').order('email')
   ]);
-  const firstErr = [s, sp, pr, pf, pc, mv, gt, au].find(r => r.error);
+  const firstErr = [s, sp, pr, pf, pc, pa, pi, ppx, mv, gt, au].find(r => r.error);
   if (firstErr) throw firstErr.error;
   if (lastLocalWrite > startedAt || pendingWrites > 0) { scheduleReload(); return false; } // a write landed meanwhile; this snapshot is stale
   if (!settingsDirty) { state.settings = Object.assign({}, DEFAULT_SETTINGS, (s.data && s.data.data) || {}); if (!state.settings.linePrices) state.settings.linePrices = {}; }
@@ -179,6 +188,9 @@ async function loadAll(){
   state.products = {}; (pr.data || []).forEach(r => state.products[r.id] = r);
   state.pf = {}; (pf.data || []).forEach(r => { (state.pf[r.product_id] = state.pf[r.product_id] || []).push(r); });
   state.pc = {}; (pc.data || []).forEach(r => { (state.pc[r.product_id] = state.pc[r.product_id] || []).push(r); });
+  state.parts = {}; (pa.data || []).forEach(r => state.parts[r.id] = r);
+  state.printers = {}; (pi.data || []).forEach(r => state.printers[r.id] = r);
+  state.pp = {}; (ppx.data || []).forEach(r => { (state.pp[r.part_id] = state.pp[r.part_id] || []).push(r.printer_id); });
   state.movements = mv.data || [];
   state.gtin = {}; (gt.data || []).forEach(r => state.gtin[r.gtin] = r.cat_key);
   state.allowedUsers = (au.data || []).map(r => r.email);
@@ -219,6 +231,24 @@ async function saveRecipe(productId, rows){
   const clean = rows.filter(r => r.spool_id || num(r.grams) > 0 || num(r.purge_g) > 0 || num(r.tower_g) > 0).map((r, i) => ({ product_id: productId, spool_id: r.spool_id || null, grams: num(r.grams), purge_g: num(r.purge_g), tower_g: num(r.tower_g), position: i }));
   if (clean.length) { const r = await dbWrite(() => sb.from('product_filaments').insert(clean).select(), 'Could not save the filaments'); state.pf[productId] = r.data; } else state.pf[productId] = [];
 }
+async function savePart(pt){
+  const row = Object.assign({}, pt); delete row.created_at; delete row.updated_at;
+  const r = await dbWrite(() => sb.from('parts').upsert(row).select().single(), 'Could not save the part');
+  state.parts[r.data.id] = r.data; return r.data;
+}
+async function deletePart(id){ const pt = state.parts[id]; await dbWrite(() => sb.from('parts').delete().eq('id', id), 'Could not delete the part'); delete state.parts[id]; delete state.pp[id]; if (pt && pt.photo_path) removePhotos([pt.photo_path]); }
+async function savePartPrinters(partId, printerIds){
+  await dbWrite(() => sb.from('part_printers').delete().eq('part_id', partId), 'Could not save the printers');
+  const rows = printerIds.filter(id => state.printers[id]).map(id => ({ part_id: partId, printer_id: id }));
+  if (rows.length) await dbWrite(() => sb.from('part_printers').insert(rows), 'Could not save the printers');
+  state.pp[partId] = rows.map(r => r.printer_id);
+}
+async function savePrinter(pr){
+  const row = Object.assign({}, pr); delete row.created_at; delete row.updated_at;
+  const r = await dbWrite(() => sb.from('printers').upsert(row).select().single(), 'Could not save the printer');
+  state.printers[r.data.id] = r.data; return r.data;
+}
+async function deletePrinter(id){ await dbWrite(() => sb.from('printers').delete().eq('id', id), 'Could not remove the printer'); delete state.printers[id]; Object.keys(state.pp).forEach(k => { state.pp[k] = state.pp[k].filter(x => x !== id); }); }
 async function saveComponents(productId, rows){
   await dbWrite(() => sb.from('product_components').delete().eq('product_id', productId), 'Could not save the playset contents');
   const clean = rows.filter(r => r.component_id && r.component_id !== productId).map((r, i) => ({ product_id: productId, component_id: r.component_id, qty: num(r.qty) > 0 ? num(r.qty) : 1, position: i }));
@@ -249,6 +279,19 @@ async function makeProduct(p, units, note){
   await addMovement({ kind: 'made', product_id: p.id, qty: units, grams: Math.round(c.filamentG * units * 10) / 10, cost: Math.round(c.unit * units * 100) / 100, note: note || null, detail: { by, components: taken, unit: c.unit, hours: Math.round(c.hours * units * 100) / 100, short: shorts.join(', ') || null } });
   return { c, shorts };
 }
+async function receivePart(pt, n, note){
+  n = Math.max(0.01, num(n)); pt.on_hand = Math.round((num(pt.on_hand) + n) * 100) / 100; await savePart(pt);
+  await addMovement({ kind: 'receive', part_id: pt.id, qty: n, grams: 0, cost: Math.round(n * num(pt.cost) * 100) / 100, note: note || null });
+}
+async function usePart(pt, n, note){
+  n = Math.max(0.01, num(n)); const have = num(pt.on_hand); pt.on_hand = Math.round(Math.max(0, have - n) * 100) / 100; await savePart(pt);
+  await addMovement({ kind: 'consume', part_id: pt.id, qty: n, grams: 0, cost: Math.round(n * num(pt.cost) * 100) / 100, note: note || null, detail: { taken: Math.min(have, n), short: n > have ? Math.round((n - have) * 100) / 100 : 0 } });
+}
+async function adjustPart(pt, newQty, note){
+  const from = num(pt.on_hand); newQty = Math.max(0, num(newQty)); if (newQty === from) return;
+  pt.on_hand = newQty; await savePart(pt);
+  await addMovement({ kind: 'adjust', part_id: pt.id, qty: newQty - from, grams: 0, cost: 0, note: note || null, detail: { from, to: newQty } });
+}
 async function sellProduct(p, units, note){
   units = Math.max(1, Math.round(units)); const c = productCost(p);
   p.on_hand = Math.max(0, num(p.on_hand) - units); await saveProduct(p);
@@ -262,7 +305,10 @@ async function adjustProduct(p, newQty, note){
 async function undoMovement(m){
   if (m.kind === 'made') { const p = state.products[m.product_id]; ((m.detail && m.detail.by) || []).forEach(b => { const sp = state.spools[b.spoolId]; const g = b.used !== undefined ? num(b.used) : num(b.grams); if (sp && g > 0) restock(sp, g); }); for (const b of ((m.detail && m.detail.by) || [])) { const sp = state.spools[b.spoolId]; if (sp) await saveSpool(sp); } for (const cpart of ((m.detail && m.detail.components) || [])) { const cp = state.products[cpart.productId]; const back = cpart.taken !== undefined ? num(cpart.taken) : num(cpart.qty); if (cp && back > 0) { cp.on_hand = num(cp.on_hand) + back; await saveProduct(cp); } } if (p) { p.on_hand = Math.max(0, num(p.on_hand) - num(m.qty)); await saveProduct(p); } }
   else if (m.kind === 'sold') { const p = state.products[m.product_id]; if (p) { p.on_hand = num(p.on_hand) + num(m.qty); await saveProduct(p); } }
+  else if (m.kind === 'consume' && m.part_id) { const pt = state.parts[m.part_id]; if (pt) { const back = m.detail && m.detail.taken !== undefined ? num(m.detail.taken) : num(m.qty); pt.on_hand = Math.round((num(pt.on_hand) + back) * 100) / 100; await savePart(pt); } }
+  else if (m.kind === 'receive' && m.part_id) { const pt = state.parts[m.part_id]; if (pt) { pt.on_hand = Math.round(Math.max(0, num(pt.on_hand) - num(m.qty)) * 100) / 100; await savePart(pt); } }
   else if (m.kind === 'receive') { const sp = state.spools[m.spool_id]; if (sp) { sp.rolls = Math.max(0, rollsOf(sp) - Math.round(num(m.qty))); if (sp.rolls === 0) sp.open_left = 0; await saveSpool(sp); } }
+  else if (m.kind === 'adjust' && m.part_id) { const pt = state.parts[m.part_id]; if (pt && m.detail) { pt.on_hand = num(m.detail.from); await savePart(pt); } }
   else if (m.kind === 'adjust') { if (m.product_id) { const p = state.products[m.product_id]; if (p && m.detail) { p.on_hand = num(m.detail.from); await saveProduct(p); } } else if (m.spool_id) { const sp = state.spools[m.spool_id]; if (sp && m.detail && m.detail.from) { sp.rolls = num(m.detail.from.rolls); sp.open_left = num(m.detail.from.open_left); await saveSpool(sp); } } }
   else { toast('That entry cannot be undone'); return; }
   await deleteMovement(m.id);
@@ -368,6 +414,7 @@ function renderWall(){
 
 /* ---------------- render: log ---------------- */
 const KIND_LABEL = { receive: 'Received', made: 'Made', sold: 'Sold', adjust: 'Adjusted', consume: 'Used', undo: 'Undo' };
+function movementTarget(m){ return m.product_id ? state.products[m.product_id] : m.spool_id ? state.spools[m.spool_id] : m.part_id ? state.parts[m.part_id] : null; }
 function renderLog(){
   const now = new Date(); const m0 = new Date(now.getFullYear(), now.getMonth(), 1).getTime();
   let made = 0, sold = 0, revenue = 0, cogs = 0, filament = 0;
@@ -379,28 +426,29 @@ function renderLog(){
     '<div class="tile-num"><span class="tl">Sold</span><span class="tv">' + sold + '</span><span class="ts">units this month</span></div>' +
     '<div class="tile-num accent"><span class="tl">Sales</span><span class="tv">' + money(revenue) + '</span><span class="ts">at list price</span></div>' +
     '<div class="tile-num"><span class="tl">Gross profit</span><span class="tv">' + money(revenue - cogs) + '</span><span class="ts">sales minus cost of goods</span></div>';
-  $('#logChips').innerHTML = ['all', 'made', 'sold', 'receive', 'adjust'].map(k => '<button class="chip' + (state.ui.logKind === k ? ' on' : '') + '" data-action="log-kind" data-k="' + k + '">' + (k === 'all' ? 'All' : KIND_LABEL[k]) + '</button>').join('');
+  $('#logChips').innerHTML = ['all', 'made', 'sold', 'receive', 'consume', 'adjust'].map(k => '<button class="chip' + (state.ui.logKind === k ? ' on' : '') + '" data-action="log-kind" data-k="' + k + '">' + (k === 'all' ? 'All' : KIND_LABEL[k]) + '</button>').join('');
   const list = state.movements.filter(m => state.ui.logKind === 'all' || m.kind === state.ui.logKind);
   if (!list.length) { $('#logList').innerHTML = '<div class="empty">Nothing here yet. Receive a roll, make something, or sell something and it lands here.</div>'; return; }
   $('#logList').innerHTML = '<table class="list"><tr><th>When</th><th>What</th><th class="n">Qty</th><th class="n">Filament</th><th class="n">Cost</th><th></th></tr>' +
     list.map(m => {
-      const p = m.product_id ? state.products[m.product_id] : null; const sp = m.spool_id ? state.spools[m.spool_id] : null;
-      const what = p ? esc(p.name) : sp ? esc(sp.color) + ' · ' + esc(sp.line_name || '') : (m.detail && m.detail.name ? esc(m.detail.name) : '(removed)');
+      const p = m.product_id ? state.products[m.product_id] : null; const sp = m.spool_id ? state.spools[m.spool_id] : null; const pt = m.part_id ? state.parts[m.part_id] : null;
+      const what = p ? esc(p.name) : sp ? esc(sp.color) + ' · ' + esc(sp.line_name || '') : pt ? esc(pt.name) + (pt.part_no ? ' <span class="sub" style="display:inline">' + esc(pt.part_no) + '</span>' : '') : (m.detail && m.detail.name ? esc(m.detail.name) : '(removed)');
       let sub = '';
       if (m.kind === 'made' && m.detail) sub = ((m.detail.by || []).map(b => esc(b.color) + ' ' + grams(b.grams)).concat((m.detail.components || []).map(cpart => num(cpart.qty) + ' × ' + esc(cpart.name)))).join(', ') + (m.detail.short ? ' · <b style="color:var(--red)">' + esc(m.detail.short) + '</b>' : '');
       if (m.kind === 'sold' && m.detail) sub = (m.detail.revenue ? money(num(m.detail.revenue)) + ' in sales' : 'no price set');
       if (m.kind === 'adjust' && m.detail && m.detail.from !== undefined && typeof m.detail.from !== 'object') sub = m.detail.from + ' → ' + m.detail.to;
+      if (m.kind === 'consume' && m.detail && m.detail.short) sub = '<b style="color:var(--red)">only ' + num(m.detail.taken) + ' were there</b>';
       if (m.note) sub += (sub ? ' · ' : '') + esc(m.note);
       if (m.actor) sub += (sub ? ' · ' : '') + esc(String(m.actor).split('@')[0]);
-      const qty = m.kind === 'receive' ? '+' + num(m.qty) + ' roll' + (num(m.qty) === 1 ? '' : 's') : m.kind === 'sold' ? '−' + num(m.qty) : m.kind === 'made' ? '+' + num(m.qty) : (num(m.qty) > 0 ? '+' : '') + num(m.qty);
+      const qty = m.kind === 'receive' ? '+' + num(m.qty) + (m.part_id || m.product_id ? '' : ' roll' + (num(m.qty) === 1 ? '' : 's')) : m.kind === 'sold' || m.kind === 'consume' ? '−' + num(m.qty) : m.kind === 'made' ? '+' + num(m.qty) : (num(m.qty) > 0 ? '+' : '') + num(m.qty);
       return '<tr><td>' + esc(dateShort(m.created_at)) + '<span class="sub">' + esc(timeShort(m.created_at)) + '</span></td><td><span class="tag ' + (m.kind === 'sold' ? '' : 'ok') + '">' + (KIND_LABEL[m.kind] || m.kind) + '</span> ' + what + (sub ? '<span class="sub">' + sub + '</span>' : '') + '</td>' +
-        '<td class="n">' + qty + '</td><td class="n">' + (num(m.grams) ? grams(num(m.grams)) : '') + '</td><td class="n">' + (num(m.cost) ? money(num(m.cost)) : '') + '</td><td class="n">' + (['made', 'sold', 'receive', 'adjust'].indexOf(m.kind) >= 0 ? '<button class="btn ghost small" data-action="log-undo" data-id="' + esc(m.id) + '">Undo</button>' : '') + '</td></tr>';
+        '<td class="n">' + qty + '</td><td class="n">' + (num(m.grams) ? grams(num(m.grams)) : '') + '</td><td class="n">' + (num(m.cost) ? money(num(m.cost)) : '') + '</td><td class="n">' + (['made', 'sold', 'receive', 'adjust', 'consume'].indexOf(m.kind) >= 0 ? '<button class="btn ghost small" data-action="log-undo" data-id="' + esc(m.id) + '">Undo</button>' : '') + '</td></tr>';
     }).join('') + '</table>';
 }
 const csvq = s => '"' + String(s == null ? '' : s).replace(/"/g, '""') + '"';
 function logCSV(){
   const rows = [['when', 'kind', 'item', 'qty', 'grams', 'cost', 'revenue', 'detail', 'note', 'by']];
-  state.movements.slice().reverse().forEach(m => { const p = m.product_id ? state.products[m.product_id] : null; const sp = m.spool_id ? state.spools[m.spool_id] : null; rows.push([m.created_at, m.kind, p ? p.name : sp ? sp.color + ' ' + (sp.line_name || '') : '', num(m.qty), num(m.grams), num(m.cost), m.detail && m.detail.revenue ? num(m.detail.revenue) : '', m.detail ? (m.detail.by || []).map(b => b.color + ' ' + b.grams + 'g').concat((m.detail.components || []).map(cpart => cpart.qty + ' x ' + cpart.name)).join('; ') : '', m.note || '', m.actor || '']); });
+  state.movements.slice().reverse().forEach(m => { const p = m.product_id ? state.products[m.product_id] : null; const sp = m.spool_id ? state.spools[m.spool_id] : null; const pt = m.part_id ? state.parts[m.part_id] : null; rows.push([m.created_at, m.kind, p ? p.name : sp ? sp.color + ' ' + (sp.line_name || '') : pt ? pt.name + (pt.part_no ? ' ' + pt.part_no : '') : '', num(m.qty), num(m.grams), num(m.cost), m.detail && m.detail.revenue ? num(m.detail.revenue) : '', m.detail ? (m.detail.by || []).map(b => b.color + ' ' + b.grams + 'g').concat((m.detail.components || []).map(cpart => cpart.qty + ' x ' + cpart.name)).join('; ') : '', m.note || '', m.actor || '']); });
   return rows.map(r => r.map(csvq).join(',')).join('\n');
 }
 
@@ -408,33 +456,178 @@ function logCSV(){
 function reorderRows(){
   const spools = sortSpools(Object.values(state.spools)).filter(sp => spoolStatus(sp) !== 'ok').map(sp => ({ kind: 'spool', sp, status: spoolStatus(sp), avail: spoolAvailable(sp), at: reorderPoint(sp), cost: effCost(sp) }));
   const products = sortProducts(Object.values(state.products).filter(p => !p.archived && productStatus(p) !== 'ok')).map(p => ({ kind: 'product', p, status: productStatus(p), have: num(p.on_hand), at: productMin(p), need: Math.max(0, productMin(p) - num(p.on_hand)), cost: productCost(p).unit }));
-  return { spools, products };
+  const parts = sortParts(Object.values(state.parts).filter(pt => !pt.archived && partStatus(pt) !== 'ok')).map(pt => ({ kind: 'part', pt, status: partStatus(pt), have: num(pt.on_hand), at: partMin(pt), need: Math.max(0, partMin(pt) - num(pt.on_hand)), cost: num(pt.cost) }));
+  return { spools, products, parts };
 }
 function renderReorder(){
-  const r = reorderRows(); const nr = $('#navReorder'); nr.hidden = !(r.spools.length + r.products.length); nr.textContent = r.spools.length + r.products.length;
-  if (!r.spools.length && !r.products.length) { $('#reorderList').innerHTML = '<div class="empty">Every spool is above its reorder point and every product is above its shelf minimum.</div>'; return; }
+  const r = reorderRows(); const total = r.spools.length + r.products.length + r.parts.length; const nr = $('#navReorder'); nr.hidden = !total; nr.textContent = total;
+  if (!total) { $('#reorderList').innerHTML = '<div class="empty">Every spool is above its reorder point, every product is above its shelf minimum, and no part is running out.</div>'; return; }
   let html = '';
   if (r.spools.length) html += '<table class="list"><tr><th>Filament to buy</th><th></th><th class="n">On hand</th><th class="n">Reorder below</th><th class="n">One roll</th></tr>' + r.spools.map(x => '<tr><td>' + dotHTML(x.sp) + ' ' + esc(x.sp.color) + '<span class="sub">' + esc(x.sp.line_name || '') + (x.sp.location ? ' · ' + esc(x.sp.location) : '') + '</span></td><td><span class="tag">' + x.status + '</span></td><td class="n">' + grams(x.avail) + '</td><td class="n">' + grams(x.at) + '</td><td class="n">' + money(x.cost) + '</td></tr>').join('') + '<tr class="total"><td colspan="4">' + r.spools.length + ' spool' + (r.spools.length === 1 ? '' : 's') + ', one roll each</td><td class="n">' + money(r.spools.reduce((a, x) => a + x.cost, 0)) + '</td></tr></table>';
   if (r.products.length) html += '<table class="list" style="margin-top:18px"><tr><th>Products to make</th><th></th><th class="n">On shelf</th><th class="n">Minimum</th><th class="n">To make</th><th class="n">Filament cost</th></tr>' + r.products.map(x => '<tr><td>' + esc(x.p.name) + '<span class="sub">' + esc(x.p.sku || '') + '</span></td><td><span class="tag">' + x.status + '</span></td><td class="n">' + x.have + '</td><td class="n">' + x.at + '</td><td class="n">' + x.need + '</td><td class="n">' + money(x.need * x.cost) + '</td></tr>').join('') + '</table>';
+  if (r.parts.length) html += '<table class="list" style="margin-top:18px"><tr><th>Parts to buy</th><th></th><th class="n">On hand</th><th class="n">Reorder below</th><th class="n">To buy</th><th class="n">Cost</th></tr>' + r.parts.map(x => '<tr><td>' + esc(x.pt.name) + '<span class="sub">' + esc([x.pt.part_no, x.pt.vendor, fitsText(x.pt)].filter(Boolean).join(' · ')) + '</span></td><td><span class="tag">' + x.status + '</span></td><td class="n">' + x.have + '</td><td class="n">' + x.at + '</td><td class="n">' + x.need + '</td><td class="n">' + money(x.need * x.cost) + '</td></tr>').join('') + '</table>';
   $('#reorderList').innerHTML = html;
 }
 function reorderText(){
   const r = reorderRows(); const L = ['MOSTLY 3D · REORDER · ' + new Date().toLocaleDateString('en-US')];
   if (r.spools.length) { L.push('FILAMENT'); r.spools.forEach(x => L.push('  ' + x.sp.color + ' · ' + (x.sp.line_name || '') + '  (' + x.status + ', ' + grams(x.avail) + ' on hand)  ' + money(x.cost) + ' a roll')); }
   if (r.products.length) { L.push('MAKE'); r.products.forEach(x => L.push('  ' + x.need + ' × ' + x.p.name + '  (' + x.have + ' on shelf, minimum ' + x.at + ')')); }
-  if (!r.spools.length && !r.products.length) L.push('  Nothing to reorder.');
+  if (r.parts.length) { L.push('PARTS'); r.parts.forEach(x => L.push('  ' + x.need + ' × ' + x.pt.name + (x.pt.part_no ? ' (' + x.pt.part_no + ')' : '') + (x.pt.vendor ? ' from ' + x.pt.vendor : '') + '  (' + x.have + ' on hand)')); }
+  if (!r.spools.length && !r.products.length && !r.parts.length) L.push('  Nothing to reorder.');
   return L.join('\n');
 }
 
 /* ---------------- render: labels ---------------- */
 function renderLabels(){
-  $('#labelChips').innerHTML = ['spools', 'products'].map(k => '<button class="chip' + (state.ui.labelKind === k ? ' on' : '') + '" data-action="label-kind" data-k="' + k + '">' + (k === 'spools' ? 'Spools' : 'Products') + '</button>').join('');
-  let items = state.ui.labelKind === 'spools' ? sortSpools(Object.values(state.spools)).map(sp => ({ id: sp.id, code: sp.barcode, name: sp.color, sub: sp.line_name || '' })) : sortProducts(Object.values(state.products).filter(p => !p.archived)).map(p => ({ id: p.id, code: p.barcode || p.sku, name: p.name, sub: p.sku || '' }));
+  $('#labelChips').innerHTML = ['spools', 'products', 'parts'].map(k => '<button class="chip' + (state.ui.labelKind === k ? ' on' : '') + '" data-action="label-kind" data-k="' + k + '">' + (k === 'spools' ? 'Spools' : k === 'products' ? 'Products' : 'Parts') + '</button>').join('');
+  let items = state.ui.labelKind === 'spools' ? sortSpools(Object.values(state.spools)).map(sp => ({ id: sp.id, code: sp.barcode, name: sp.color, sub: sp.line_name || '' })) : state.ui.labelKind === 'parts' ? sortParts(Object.values(state.parts).filter(pt => !pt.archived)).map(pt => ({ id: pt.id, code: pt.barcode || pt.part_no, name: pt.name, sub: [pt.part_no, fitsText(pt)].filter(Boolean).join(' · ') })) : sortProducts(Object.values(state.products).filter(p => !p.archived)).map(p => ({ id: p.id, code: p.barcode || p.sku, name: p.name, sub: p.sku || '' }));
   items = items.filter(i => i.code);
   if (!items.length) { $('#labelGrid').innerHTML = '<div class="empty">Nothing to label yet.</div>'; return; }
   $('#labelGrid').innerHTML = items.map(i => '<div class="label"><div class="ln">' + esc(i.name) + '</div><div class="ls">' + esc(i.sub) + '</div><svg class="bc" data-code="' + esc(i.code) + '"></svg></div>').join('');
   if (window.JsBarcode) document.querySelectorAll('#labelGrid svg.bc').forEach(el => { try { window.JsBarcode(el, el.dataset.code, { format: 'CODE128', width: 1.6, height: 44, fontSize: 12, margin: 4, displayValue: true }); } catch (e) {} });
   else $('#labelGrid').insertAdjacentHTML('afterbegin', '<p class="fine" style="grid-column:1/-1">Barcode drawing is still loading; reload if the bars do not appear.</p>');
+}
+
+
+/* ---------------- render: home ---------------- */
+const TABS = { home: ['home', 'reorder'], products: ['products'], filament: ['rack', 'wall'], parts: ['parts'], log: ['log'], labels: ['labels'], settings: ['settings'] };
+function applyTab(){
+  const tab = TABS[state.ui.tab] ? state.ui.tab : 'home'; const show = TABS[tab];
+  document.querySelectorAll('section.sec').forEach(sec => { sec.hidden = show.indexOf(sec.id) < 0; sec.classList.toggle('tab-last', sec.id === show[show.length - 1]); });
+  document.querySelectorAll('nav.steps a').forEach(a => a.classList.toggle('on', a.dataset.tab === tab));
+}
+function goTab(tab, anchor){
+  if (!TABS[tab]) tab = 'home'; state.ui.tab = tab; applyTab();
+  try { history.replaceState(null, '', '#' + tab); } catch (e) {}
+  const el = anchor ? document.getElementById(anchor) : null;
+  if (el) el.scrollIntoView({ block: 'start' }); else window.scrollTo({ top: 0 });
+}
+function fitsText(pt){ const prs = partPrinters(pt); return prs.length ? prs.map(p => p.name).join(', ') : 'any printer'; }
+function renderHome(){
+  const products = Object.values(state.products).filter(p => !p.archived); let units = 0, retail = 0, lowP = 0;
+  products.forEach(p => { const n = num(p.on_hand); units += n; retail += n * num(p.price); if (productStatus(p) !== 'ok') lowP++; });
+  const spools = Object.values(state.spools); let onHand = 0, fval = 0, lowS = 0;
+  spools.forEach(sp => { const a = spoolAvailable(sp); onHand += a; fval += a * ppg(sp); if (spoolStatus(sp) !== 'ok') lowS++; });
+  const parts = Object.values(state.parts).filter(pt => !pt.archived); let pval = 0, lowA = 0;
+  parts.forEach(pt => { pval += num(pt.on_hand) * num(pt.cost); if (partStatus(pt) !== 'ok') lowA++; });
+  const now = new Date(); const m0 = new Date(now.getFullYear(), now.getMonth(), 1).getTime(); let made = 0, sold = 0, revenue = 0, cogs = 0;
+  state.movements.forEach(m => { if (new Date(m.created_at).getTime() < m0) return; if (m.kind === 'made' && m.product_id) made += num(m.qty); if (m.kind === 'sold') { sold += num(m.qty); cogs += num(m.cost); revenue += num(m.detail && m.detail.revenue); } });
+  const monthName = now.toLocaleDateString('en-US', { month: 'long' });
+  const tile = (tab, label, value, sub, cls) => '<button class="tile-num link' + (cls ? ' ' + cls : '') + '" data-action="go" data-tab="' + tab + '"><span class="tl">' + label + '</span><span class="tv">' + value + '</span><span class="ts">' + sub + '</span></button>';
+  $('#homeTiles').innerHTML =
+    tile('products', 'Products', units, products.length + ' product' + (products.length === 1 ? '' : 's') + ' · ' + money(retail) + ' at retail', lowP ? 'alert' : '') +
+    tile('filament', 'Filament', kg(onHand), spools.length + ' spool' + (spools.length === 1 ? '' : 's') + ' · ' + money(fval) + ' on the rack', lowS ? 'alert' : '') +
+    tile('parts', 'Parts', parts.length, (lowA ? lowA + ' running out · ' : '') + money(pval) + ' in the drawer', lowA ? 'alert' : '') +
+    tile('log', monthName, money(revenue), sold + ' sold · ' + made + ' made · ' + money(revenue - cogs) + ' gross profit', 'accent');
+  const r = reorderRows(); const rows = [];
+  r.products.forEach(x => rows.push('<div class="attn"><span class="tag">' + x.status + '</span><span class="what">' + esc(x.p.name) + '<span class="sub">' + x.have + ' on the shelf, minimum ' + x.at + ' · make ' + x.need + '</span></span><button class="btn ghost small" data-action="product-open" data-id="' + esc(x.p.id) + '">Open</button></div>'));
+  r.spools.forEach(x => rows.push('<div class="attn"><span class="tag">' + x.status + '</span><span class="what">' + dotHTML(x.sp, true) + ' ' + esc(x.sp.color) + ' <span class="sub">' + esc(x.sp.line_name || '') + ' · ' + grams(x.avail) + ' left, reorder below ' + grams(x.at) + ' · ' + money(x.cost) + ' a roll</span></span><button class="btn ghost small" data-action="spool-edit" data-id="' + esc(x.sp.id) + '">Open</button></div>'));
+  r.parts.forEach(x => rows.push('<div class="attn"><span class="tag">' + x.status + '</span><span class="what">' + esc(x.pt.name) + '<span class="sub">' + x.have + ' on hand, reorder below ' + x.at + (x.pt.vendor ? ' · ' + esc(x.pt.vendor) : '') + '</span></span><button class="btn ghost small" data-action="part-open" data-id="' + esc(x.pt.id) + '">Open</button></div>'));
+  $('#homeAttention').innerHTML = (rows.length ? rows.slice(0, 8).join('') : '<div class="attn"><span class="what" style="color:var(--ink-3)">Everything is stocked.</span></div>') + (rows.length > 8 ? '<button class="more" data-action="go" data-tab="home" data-anchor="reorder">All ' + rows.length + ' on the reorder list</button>' : rows.length ? '<button class="more" data-action="go" data-tab="home" data-anchor="reorder">Full reorder list</button>' : '');
+  const recent = state.movements.slice(0, 8).map(m => { const t = movementTarget(m); const name = t ? (t.name || t.color) : '(removed)'; const q = m.kind === 'sold' || m.kind === 'consume' ? '−' + num(m.qty) : m.kind === 'adjust' ? (num(m.qty) > 0 ? '+' : '') + num(m.qty) : '+' + num(m.qty); return '<div class="attn"><span class="tag ' + (m.kind === 'sold' ? '' : 'ok') + '">' + (KIND_LABEL[m.kind] || m.kind) + '</span><span class="what">' + esc(name) + '<span class="sub">' + esc(dateShort(m.created_at)) + ' ' + esc(timeShort(m.created_at)) + (m.actor ? ' · ' + esc(String(m.actor).split('@')[0]) : '') + '</span></span><b style="font-variant-numeric:tabular-nums">' + q + '</b></div>'; });
+  $('#homeRecent').innerHTML = (recent.length ? recent.join('') : '<div class="attn"><span class="what" style="color:var(--ink-3)">Nothing has moved yet.</span></div>') + (state.movements.length ? '<button class="more" data-action="go" data-tab="log">Full activity</button>' : '');
+}
+
+/* ---------------- render: parts ---------------- */
+function renderParts(){
+  const all = sortParts(Object.values(state.parts).filter(pt => !pt.archived));
+  let onHand = 0, value = 0, low = 0; const cats = {};
+  all.forEach(pt => { onHand += num(pt.on_hand); value += num(pt.on_hand) * num(pt.cost); if (partStatus(pt) !== 'ok') low++; if (pt.category) cats[pt.category] = true; });
+  const printers = sortPrinters(Object.values(state.printers));
+  $('#partTiles').innerHTML =
+    '<div class="tile-num"><span class="tl">Parts</span><span class="tv">' + all.length + '</span><span class="ts">different items</span></div>' +
+    '<div class="tile-num"><span class="tl">On hand</span><span class="tv">' + Math.round(onHand * 100) / 100 + '</span><span class="ts">pieces in the drawer</span></div>' +
+    '<div class="tile-num"><span class="tl">Value</span><span class="tv">' + money(value) + '</span><span class="ts">at cost</span></div>' +
+    '<div class="tile-num"><span class="tl">Printers</span><span class="tv">' + printers.length + '</span><span class="ts">' + (printers.length ? printers.map(p => esc(p.name)).join(', ') : 'add yours') + '</span></div>' +
+    '<div class="tile-num' + (low ? ' alert' : '') + '"><span class="tl">Running out</span><span class="tv">' + low + '</span><span class="ts">' + (low ? 'below reorder point' : 'all stocked') + '</span></div>';
+  const nl = $('#navPartsLow'); nl.hidden = !low; nl.textContent = low;
+  let chips = '<button class="chip' + (state.ui.partPrinter === 'all' ? ' on' : '') + '" data-action="part-printer" data-id="all">All</button>' +
+    printers.map(p => '<button class="chip' + (state.ui.partPrinter === p.id ? ' on' : '') + '" data-action="part-printer" data-id="' + esc(p.id) + '">' + esc(p.name) + '</button>').join('') +
+    (printers.length ? '<button class="chip' + (state.ui.partPrinter === 'any' ? ' on' : '') + '" data-action="part-printer" data-id="any">Fits any</button>' : '') +
+    '<button class="chip red' + (state.ui.partLowOnly ? ' on' : '') + '" data-action="part-low">Running out</button>';
+  const catList = Object.keys(cats).sort();
+  if (catList.length) chips += '<span style="flex-basis:100%;height:0"></span><button class="chip' + (state.ui.partCat === 'all' ? ' on' : '') + '" data-action="part-cat" data-k="all">All types</button>' + catList.map(k => '<button class="chip' + (state.ui.partCat === k ? ' on' : '') + '" data-action="part-cat" data-k="' + esc(k) + '">' + esc(k) + '</button>').join('');
+  $('#partChips').innerHTML = chips;
+  const q = state.ui.partQ.trim().toLowerCase(); const pf = state.ui.partPrinter;
+  let list = all.filter(pt => {
+    const prs = state.pp[pt.id] || [];
+    if (pf === 'any') return !prs.length;
+    if (pf !== 'all') return !prs.length || prs.indexOf(pf) >= 0; // a printer's view includes the parts that fit anything
+    return true;
+  });
+  if (state.ui.partCat !== 'all') list = list.filter(pt => pt.category === state.ui.partCat);
+  if (state.ui.partLowOnly) list = list.filter(pt => partStatus(pt) !== 'ok');
+  if (q) list = list.filter(pt => [pt.name, pt.part_no, pt.barcode, pt.category, pt.vendor, pt.location, pt.notes, fitsText(pt)].join(' ').toLowerCase().indexOf(q) >= 0);
+  $('#partList').innerHTML = list.length ? list.map(pt => {
+    const st = partStatus(pt); const prs = partPrinters(pt); const url = photoUrl(pt);
+    return '<div class="prow' + (st !== 'ok' ? ' low' : '') + '">' +
+      '<button class="thumb" data-action="part-open" data-id="' + esc(pt.id) + '" aria-label="Open ' + esc(pt.name) + '">' + (url ? '<img src="' + esc(url) + '" alt="" loading="lazy">' : esc((pt.category || 'part').slice(0, 4))) + '</button>' +
+      '<div><div class="nm">' + esc(pt.name) + (st !== 'ok' ? ' <span class="tag">' + st + '</span>' : '') + '</div><div class="meta">' + (pt.part_no ? '<span>' + esc(pt.part_no) + '</span>' : '') + (pt.vendor ? '<span>' + esc(pt.vendor) + '</span>' : '') + (pt.location ? '<span>' + esc(pt.location) + '</span>' : '') + '<span class="fits">' + (prs.length ? prs.map(p => '<span>' + esc(p.name) + '</span>').join('') : '<span class="any">any printer</span>') + '</span></div></div>' +
+      '<div class="cat">' + (pt.category ? '<span class="pbadge">' + esc(pt.category) + '</span>' : '') + '</div>' +
+      '<div class="qty"><button class="iconbtn" data-action="part-minus" data-id="' + esc(pt.id) + '" aria-label="Used one">−</button><b>' + num(pt.on_hand) + '</b><button class="iconbtn" data-action="part-plus" data-id="' + esc(pt.id) + '" aria-label="Received one">+</button></div>' +
+      '<div class="cost">' + (num(pt.cost) ? '<b>' + money(num(pt.cost)) + '</b>each' : '<b>—</b>no cost') + '</div>' +
+      '<button class="iconbtn" data-action="part-open" data-id="' + esc(pt.id) + '" aria-label="Edit">✎</button></div>';
+  }).join('') : '<div class="empty">' + (all.length ? 'No parts match.' : 'No parts yet. Add a nozzle, a hotend, a build plate, and tie each one to the printers it fits. Scanning an unknown barcode in Receive mode can create a part on the spot.') + '</div>';
+}
+
+/* ---------------- parts: modals ---------------- */
+let partDraft = null;
+function openPartModal(id, prefill){
+  const pt = id ? state.parts[id] : null;
+  partDraft = pt ? Object.assign({}, pt) : Object.assign({ name: '', part_no: '', barcode: '', category: '', cost: 0, vendor: '', link: '', location: '', on_hand: 0, reorder_at: null, photo_path: null, notes: '', archived: false }, prefill || {});
+  partDraft._printers = pt ? (state.pp[pt.id] || []).slice() : []; partDraft._photoFile = null; partDraft._photoPreview = photoUrl(pt);
+  renderPartModal();
+}
+function renderPartModal(keepFocus){
+  const p = partDraft; const printers = sortPrinters(Object.values(state.printers)); const st = p.id ? partStatus(p) : 'ok';
+  const v = k => (num(p[k]) > 0 ? num(p[k]) : '');
+  const html = '<div class="mh"><div><h3>' + (p.id ? 'Edit part' : 'New part') + '</h3><div class="sub">' + (p.id ? esc(p.name) + (p.barcode ? ' · label ' + esc(p.barcode) : '') : 'A spare, a tool, a consumable, or an accessory') + '</div></div></div>' +
+    '<div class="pedit"><div>' +
+      '<div class="photo" id="pPhoto" style="aspect-ratio:3/2">' + (p._photoPreview ? '<img src="' + esc(p._photoPreview) + '" alt="">' : '<span class="ph">Photo (optional)</span>') + '</div>' +
+      '<div class="photo-acts"><input type="file" id="pPhotoFile" accept="image/*" hidden><button class="btn ghost small" data-action="pphoto-pick">' + (p._photoPreview ? 'Change photo' : 'Add photo') + '</button>' + (p._photoPreview ? '<button class="btn ghost small" data-action="pphoto-clear">Remove</button>' : '') + '</div>' +
+      '<div class="fields" style="margin-top:12px">' + fld('a_name', 'Name', 'text', p.name || '', { wide: true, placeholder: '0.4 mm hardened steel nozzle' }) + fld('a_partno', 'Part number', 'text', p.part_no || '', { placeholder: 'Vendor or Bambu part no.' }) +
+      '<div class="field"><label for="a_cat">Type</label><input id="a_cat" list="partCats" value="' + esc(p.category || '') + '" placeholder="Nozzle, belt, tool…"><datalist id="partCats">' + PART_CATS.map(c => '<option value="' + esc(c) + '">').join('') + '</datalist></div>' +
+      fld('a_cost', 'Cost each ($)', 'number', v('cost')) + fld('a_vendor', 'Vendor', 'text', p.vendor || '', { placeholder: 'Bambu store, Amazon…' }) + fld('a_link', 'Reorder link', 'text', p.link || '', { wide: true, placeholder: 'https://' }) +
+      fld('a_loc', 'Location', 'text', p.location || '', { placeholder: 'Drawer, bin' }) + fld('a_reorder', 'Reorder below', 'number', (p.reorder_at !== null && p.reorder_at !== undefined) ? p.reorder_at : '', { placeholder: 'default ' + num(state.settings.partReorderAt) }) +
+      (p.id ? '' : fld('a_onhand', 'On hand now', 'number', v('on_hand'))) + fld('a_barcode', 'Label code', 'text', p.barcode || '', { placeholder: 'made for you if blank', hint: 'Or scan the package barcode here to use it instead' }) +
+      '<div class="field wide"><label for="a_notes">Notes</label><textarea id="a_notes" placeholder="Torque, which side, when to replace">' + esc(p.notes || '') + '</textarea></div></div>' +
+    '</div><div>' +
+      '<div class="field"><label>Fits which printers</label><small>' + (printers.length ? 'Leave all unticked for a part that fits anything.' : 'No printers yet; add them with the Printers button on the Parts page.') + '</small></div>' +
+      '<div class="checks">' + printers.map(pr => '<label class="' + (p._printers.indexOf(pr.id) >= 0 ? 'on' : '') + '"><input type="checkbox" data-printer="' + esc(pr.id) + '"' + (p._printers.indexOf(pr.id) >= 0 ? ' checked' : '') + '>' + esc(pr.name) + (pr.model ? ' <span style="opacity:.7">' + esc(pr.model) + '</span>' : '') + '</label>').join('') + '</div>' +
+      (p.id ? '<div class="stockline"><span class="onhand' + (st !== 'ok' ? ' low' : '') + '" id="aOnHand">' + num(p.on_hand) + '</span><span style="font-size:12.5px;color:var(--ink-2)">on hand</span><span style="flex:1"></span><input id="aN" type="number" inputmode="decimal" min="0" step="any" value="1" aria-label="How many"><button class="btn small" data-action="part-recv">Received</button><button class="btn red small" data-action="part-use">Used</button><button class="btn ghost small" data-action="part-set">Set count</button></div><div id="aConfirm"></div>' : '') +
+      '<div class="costbox" style="margin-top:14px"><div class="big"><span>Worth on hand</span><b>' + money(num(p.on_hand) * num(p.cost)) + '</b></div><div class="margin">' + num(p.on_hand) + ' × ' + money(num(p.cost)) + (p.link ? ' · <a href="' + esc(p.link) + '" target="_blank" rel="noopener" style="color:var(--red)">reorder link</a>' : '') + '</div></div>' +
+    '</div></div>' +
+    '<div class="acts">' + (p.id ? '<span style="display:flex;gap:6px"><button class="btn ghost" data-action="part-archive">' + (p.archived ? 'Unarchive' : 'Archive') + '</button><button class="btn danger" data-action="part-delete">Delete</button></span>' : '<span></span>') + '<span class="r"><button class="btn ghost" data-action="modal-close">Cancel</button><button class="btn" data-action="part-save">' + (p.id ? 'Save' : 'Add part') + '</button></span></div>';
+  if (keepFocus && !$('#modal').hidden) { const box = $('#modal .box'); box.innerHTML = html; } else openModal(html, true);
+}
+function readPartForm(){
+  const p = partDraft;
+  p.name = $('#a_name').value.trim(); p.part_no = $('#a_partno').value.trim() || null; p.category = $('#a_cat').value.trim() || null; p.cost = num($('#a_cost').value);
+  p.vendor = $('#a_vendor').value.trim() || null; p.link = $('#a_link').value.trim() || null; p.location = $('#a_loc').value.trim() || null;
+  p.reorder_at = $('#a_reorder').value === '' ? null : num($('#a_reorder').value); p.barcode = $('#a_barcode').value.trim() || null; p.notes = $('#a_notes').value.trim() || null;
+  const oh = $('#a_onhand'); if (oh) p.on_hand = num(oh.value);
+  p._printers = Array.from(document.querySelectorAll('#modal input[data-printer]:checked')).map(el => el.dataset.printer);
+}
+async function savePartFromModal(){
+  readPartForm(); if (!partDraft.name) { toast('Give the part a name', true); $('#a_name').focus(); return; }
+  const isNew = !partDraft.id; const row = Object.assign({}, partDraft); const printers = row._printers; delete row._printers; delete row._photoFile; delete row._photoPreview;
+  if (!row.barcode) row.barcode = code('A-'); if (isNew) delete row.id;
+  try {
+    const saved = await savePart(row);
+    if (partDraft._photoFile) { const blob = await resizeImage(partDraft._photoFile); const path = 'parts/' + saved.id + '/' + Date.now() + '.jpg'; const up = await sb.storage.from(CONFIG.photoBucket).upload(path, blob, { contentType: 'image/jpeg', upsert: true }); if (up.error) fail(up.error, 'Could not upload the photo'); else { const old = saved.photo_path; saved.photo_path = path; await savePart(saved); if (old && old !== path) removePhotos([old]); } }
+    else if (partDraft._photoPreview === '' && saved.photo_path) { const old = saved.photo_path; saved.photo_path = null; await savePart(saved); removePhotos([old]); }
+    await savePartPrinters(saved.id, printers);
+    if (isNew && num(saved.on_hand) > 0) await addMovement({ kind: 'receive', part_id: saved.id, qty: num(saved.on_hand), grams: 0, cost: Math.round(num(saved.on_hand) * num(saved.cost) * 100) / 100, note: 'added' });
+    closeModal(); toast(isNew ? saved.name + ' added' : 'Saved'); renderAll();
+  } catch (e) {}
+}
+function openPrintersModal(){
+  const printers = sortPrinters(Object.values(state.printers));
+  openModal('<div class="mh"><div><h3>Your printers</h3><div class="sub">Parts get tied to these, so a scan says which machine a part belongs to.</div></div></div>' +
+    '<div class="printer-list" id="printerList">' + (printers.length ? printers.map(pr => '<div class="prl"><input type="text" value="' + esc(pr.name) + '" data-printer-name="' + esc(pr.id) + '" aria-label="Printer name"><input type="text" value="' + esc(pr.model || '') + '" placeholder="model, e.g. X1 Carbon" data-printer-model="' + esc(pr.id) + '" aria-label="Model"><button class="btn ghost small" data-action="printer-remove" data-id="' + esc(pr.id) + '">Remove</button></div>').join('') : '<p class="note">No printers yet.</p>') + '</div>' +
+    '<form class="row" id="printerForm" style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap"><input id="printerName" type="text" placeholder="name, e.g. X1C #1" required style="flex:1 1 140px;border:1px solid var(--line-2);border-radius:999px;padding:8px 14px"><input id="printerModel" type="text" placeholder="model, e.g. X1 Carbon" style="flex:1 1 140px;border:1px solid var(--line-2);border-radius:999px;padding:8px 14px"><button class="btn small" type="submit">Add printer</button></form>' +
+    '<div class="acts"><span class="r"><button class="btn ghost" data-action="modal-close">Close</button><button class="btn" data-action="printers-save">Save names</button></span></div>');
+  setTimeout(() => { const f = $('#printerName'); if (f && !printers.length) f.focus(); }, 30);
 }
 
 /* ---------------- render: settings ---------------- */
@@ -449,6 +642,7 @@ function renderSettings(){
     f('marginPct', 'Target margin (%)', '1', 'Drives the suggested price') +
     f('reorderAt', 'Spool reorder below (g)', '10', 'Default per spool, overridable') +
     f('productReorderAt', 'Product shelf minimum', '1', 'Default per product, overridable') +
+    f('partReorderAt', 'Part reorder below', '1', 'Default per part, overridable') +
     '</div>';
   const me = state.session && state.session.user ? state.session.user.email : '';
   $('#allowedBox').innerHTML = '<div class="shead" style="font-size:11px;letter-spacing:.16em;text-transform:uppercase;font-weight:600;color:var(--ink-2)">Who can sign in<small style="display:block;font-weight:400;letter-spacing:0;text-transform:none;color:var(--ink-3);font-size:12px;margin-top:2px">Anyone can create an account, but only these emails can see or change the shop.</small></div>' +
@@ -462,7 +656,7 @@ function renderAll(){
   // Remember which input had focus so a background refresh does not steal it mid-typing.
   const ae = document.activeElement; let find = null, sel = null;
   if (ae && ae.tagName === 'INPUT') { try { sel = ae.selectionStart; } catch (e) {} if (ae.dataset.setting) find = '[data-setting="' + ae.dataset.setting + '"]'; else if (ae.dataset.lineprice) find = '[data-lineprice="' + ae.dataset.lineprice + '"][data-field="' + ae.dataset.field + '"]'; }
-  renderProducts(); renderRack(); renderChips(); renderWall(); renderLog(); renderReorder(); renderLabels(); renderSettings(); renderScanModes();
+  renderProducts(); renderRack(); renderChips(); renderWall(); renderParts(); renderLog(); renderReorder(); renderLabels(); renderSettings(); renderScanModes(); renderHome(); applyTab();
   if (find) { const el = document.querySelector(find); if (el) { el.focus(); try { if (sel !== null) el.setSelectionRange(sel, sel); } catch (e) {} } }
 }
 
@@ -665,6 +859,8 @@ function findByCode(raw){
   if (prod) return { kind: 'product', item: prod };
   const sp = Object.values(state.spools).find(s => s.barcode && s.barcode.toLowerCase() === lc);
   if (sp) return { kind: 'spool', item: sp };
+  const pt = Object.values(state.parts).find(x => (x.barcode && x.barcode.toLowerCase() === lc) || (x.part_no && x.part_no.toLowerCase() === lc));
+  if (pt) return { kind: 'part', item: pt };
   const catKey = state.gtin[c]; if (catKey) { const on = Object.values(state.spools).find(s => s.cat_key === catKey); return { kind: on ? 'spool' : 'catalog', item: on || CAT[catKey], catKey }; }
   return null;
 }
@@ -679,6 +875,12 @@ async function handleScan(raw){
     if (mode === 'lookup') { openEditModal(sp.id); return; }
     flash('<b>' + esc(sp.color) + '</b> is filament; switch to Receive to add rolls or Look up to edit it.', true); return;
   }
+  if (hit.kind === 'part') {
+    const pt = hit.item; const where = fitsText(pt);
+    if (mode === 'receive') { try { await receivePart(pt, qty, 'scan'); flash('<b>' + esc(pt.name) + '</b> +' + qty + ', now ' + num(pt.on_hand) + ' on hand · fits ' + esc(where)); renderAll(); } catch (e) {} return; }
+    if (mode === 'made' || mode === 'sold') { const had = num(pt.on_hand); try { await usePart(pt, qty, 'scan'); flash('Used ' + qty + ' × <b>' + esc(pt.name) + '</b>, ' + num(pt.on_hand) + ' left · fits ' + esc(where) + (had < qty ? ' · <b>only ' + had + ' were on hand</b>' : ''), had < qty); renderAll(); } catch (e) {} return; }
+    openPartModal(pt.id); return;
+  }
   const p = hit.item;
   if (mode === 'made') { try { const r = await makeProduct(p, qty, 'scan'); flash('Made ' + qty + ' × <b>' + esc(p.name) + '</b>, ' + num(p.on_hand) + ' on the shelf' + (r.shorts.length ? ' · ' + esc(r.shorts.join(', ')) : '')); renderAll(); } catch (e) {} return; }
   if (mode === 'sold') { if (num(p.on_hand) < qty) flash('Only ' + num(p.on_hand) + ' of <b>' + esc(p.name) + '</b> on the shelf; selling anyway.', true); try { await sellProduct(p, qty, 'scan'); flash('Sold ' + qty + ' × <b>' + esc(p.name) + '</b>, ' + num(p.on_hand) + ' left'); renderAll(); } catch (e) {} return; }
@@ -688,7 +890,7 @@ async function handleScan(raw){
 function openGtinModal(gtin, qty){
   openModal('<div class="mh"><div><h3>New barcode</h3><div class="sub">' + esc(gtin) + ' · which Bambu color is in this box?</div></div></div>' +
     '<div class="field"><input id="gtinSearch" type="search" placeholder="Type a color or line" autocomplete="off"></div><div id="gtinList" style="margin-top:10px;max-height:300px;overflow:auto"></div>' +
-    '<p class="note">Or <button class="btn ghost small" data-action="assign-open" data-code="' + esc(gtin) + '">attach it to a product</button> if this is a product\'s own barcode.</p>' +
+    '<p class="note">Not filament? <button class="btn ghost small" data-action="part-new-code" data-code="' + esc(gtin) + '">It\'s a new part</button> <button class="btn ghost small" data-action="assign-open" data-code="' + esc(gtin) + '">Attach it to something I have</button></p>' +
     '<div class="acts"><span class="r"><button class="btn ghost" data-action="modal-close">Cancel</button></span></div>');
   const render = () => { const q = $('#gtinSearch').value.trim().toLowerCase(); const list = CATALOG.filter(c => !q || (c.color + ' ' + c.lineName).toLowerCase().indexOf(q) >= 0).slice(0, 40); $('#gtinList').innerHTML = list.map(c => '<button class="btn ghost small" style="display:flex;align-items:center;gap:8px;width:100%;justify-content:flex-start;border-radius:10px;margin-bottom:4px" data-action="gtin-pick" data-gtin="' + esc(gtin) + '" data-key="' + esc(c.key) + '" data-qty="' + qty + '">' + spoolSVG(c, 28) + '<span>' + esc(c.color) + ' <span style="color:var(--ink-3)">· ' + esc(c.lineName) + '</span></span></button>').join('') || '<p class="note">No match.</p>'; };
   $('#gtinSearch').addEventListener('input', render); render(); setTimeout(() => $('#gtinSearch').focus(), 30);
@@ -699,6 +901,8 @@ function openAssignModal(code){
     '<p class="note">Attach it to something so the next scan recognizes it.</p>' +
     '<div class="field" style="margin-top:10px"><label for="asgProd">Product</label><select id="asgProd"><option value="">Choose a product</option>' + prods.map(p => '<option value="' + esc(p.id) + '">' + esc(p.name) + '</option>').join('') + '</select></div>' +
     '<div class="field" style="margin-top:10px"><label for="asgSpool">Or a spool</label><select id="asgSpool"><option value="">Choose a spool</option>' + spools.map(s => '<option value="' + esc(s.id) + '">' + esc(s.color) + ' · ' + esc(s.line_name || '') + '</option>').join('') + '</select></div>' +
+    '<div class="field" style="margin-top:10px"><label for="asgPart">Or a part</label><select id="asgPart"><option value="">Choose a part</option>' + sortParts(Object.values(state.parts).filter(x => !x.archived)).map(x => '<option value="' + esc(x.id) + '">' + esc(x.name) + (x.part_no ? ' · ' + esc(x.part_no) : '') + '</option>').join('') + '</select></div>' +
+    '<p class="note" style="margin-top:10px">Or <button class="btn ghost small" data-action="part-new-code" data-code="' + esc(code) + '">create a new part with this code</button></p>' +
     '<div class="acts"><span class="r"><button class="btn ghost" data-action="modal-close">Cancel</button><button class="btn" data-action="assign-save" data-code="' + esc(code) + '">Attach</button></span></div>');
 }
 // Bluetooth scanners type like a fast keyboard and finish with Enter.
@@ -725,7 +929,33 @@ document.addEventListener('click', async e => {
   const el = e.target.closest('[data-action]'); if (!el) return;
   const a = el.dataset.action, id = el.dataset.id;
   try {
+  if (a === 'go') { goTab(el.dataset.tab, el.dataset.anchor); return; }
   if (a === 'line') { state.ui.line = el.dataset.line; renderChips(); renderWall(); return; }
+  if (a === 'part-printer') { state.ui.partPrinter = el.dataset.id; renderParts(); return; }
+  if (a === 'part-cat') { state.ui.partCat = el.dataset.k; renderParts(); return; }
+  if (a === 'part-low') { state.ui.partLowOnly = !state.ui.partLowOnly; renderParts(); return; }
+  if (a === 'part-new') { openPartModal(null); return; }
+  if (a === 'part-new-code') { closeModal(); openPartModal(null, { barcode: el.dataset.code }); return; }
+  if (a === 'part-open') { openPartModal(id); return; }
+  if (a === 'part-plus') { const pt = state.parts[id]; if (!pt) return; await receivePart(pt, 1); renderParts(); renderHome(); renderReorder(); renderLog(); return; }
+  if (a === 'part-minus') { const pt = state.parts[id]; if (!pt) return; if (num(pt.on_hand) <= 0) { toast('None on hand', true); return; } await usePart(pt, 1); renderParts(); renderHome(); renderReorder(); renderLog(); return; }
+  if (a === 'pphoto-pick') { $('#pPhotoFile').click(); return; }
+  if (a === 'pphoto-clear') { partDraft._photoFile = null; partDraft._photoPreview = ''; readPartForm(); renderPartModal(true); return; }
+  if (a === 'part-save') { await savePartFromModal(); return; }
+  if (a === 'part-archive') { readPartForm(); partDraft.archived = !partDraft.archived; await savePartFromModal(); return; }
+  if (a === 'part-delete') { $('#aConfirm').innerHTML = '<div class="confirm">Delete <b>' + esc(partDraft.name) + '</b>? Its history stays in the activity log.<div class="acts"><button class="btn red" data-action="part-delete-do">Delete</button><button class="btn ghost" data-action="part-cancel">Keep it</button></div></div>'; return; }
+  if (a === 'part-cancel') { $('#aConfirm').innerHTML = ''; return; }
+  if (a === 'part-delete-do') { await deletePart(partDraft.id); closeModal(); toast('Deleted'); renderAll(); return; }
+  if (a === 'part-recv' || a === 'part-use' || a === 'part-set') {
+    const pt = state.parts[partDraft.id]; if (!pt) return; const n = Math.max(0, num($('#aN').value));
+    if (a === 'part-recv') { if (n <= 0) return; await receivePart(pt, n); toast('Received ' + n); }
+    else if (a === 'part-use') { if (n <= 0) return; const had = num(pt.on_hand); await usePart(pt, n); toast('Used ' + n + (had < n ? ' (only ' + had + ' were on hand)' : ''), had < n); }
+    else { await adjustPart(pt, n, 'set on part'); toast('Count set to ' + n); }
+    $('#aOnHand').textContent = num(pt.on_hand); partDraft.on_hand = pt.on_hand; renderParts(); renderHome(); renderReorder(); renderLog(); return;
+  }
+  if (a === 'printers-manage') { openPrintersModal(); return; }
+  if (a === 'printer-remove') { const pr = state.printers[id]; if (!pr) return; await deletePrinter(id); toast(pr.name + ' removed'); openPrintersModal(); renderParts(); return; }
+  if (a === 'printers-save') { for (const inp of document.querySelectorAll('[data-printer-name]')) { const pr = state.printers[inp.dataset.printerName]; const model = document.querySelector('[data-printer-model="' + inp.dataset.printerName + '"]'); if (pr && (pr.name !== inp.value.trim() || (pr.model || '') !== (model ? model.value.trim() : ''))) { pr.name = inp.value.trim() || pr.name; pr.model = model ? (model.value.trim() || null) : pr.model; await savePrinter(pr); } } closeModal(); toast('Printers saved'); renderParts(); return; }
   if (a === 'rack-line') { state.ui.rackLine = el.dataset.line; renderRack(); return; }
   if (a === 'rack-low') { state.ui.lowOnly = !state.ui.lowOnly; renderRack(); return; }
   if (a === 'product-filter') { state.ui.productFilter = el.dataset.k; renderProducts(); return; }
@@ -806,7 +1036,7 @@ document.addEventListener('click', async e => {
   if (a === 'reorder-copy') { copyText(reorderText(), 'Reorder list copied'); return; }
   if (a === 'gtin-pick') { const gtin = el.dataset.gtin, key = el.dataset.key; await dbWrite(() => sb.from('gtin_map').upsert({ gtin, cat_key: key }), 'Could not save the barcode'); state.gtin[gtin] = key; closeModal(); const on = Object.values(state.spools).find(s => s.cat_key === key); if (on && state.ui.scanMode === 'receive') { await receiveSpool(on, num(el.dataset.qty) || 1, 'scan'); flash('<b>' + esc(on.color) + '</b> +' + (num(el.dataset.qty) || 1) + ', now ' + rollsOf(on) + ' on hand'); renderAll(); } else if (on) openEditModal(on.id); else openAddModal(key, { qty: num(el.dataset.qty) || 1 }); return; }
   if (a === 'assign-open') { openAssignModal(el.dataset.code); return; }
-  if (a === 'assign-save') { const c = el.dataset.code; const pid = $('#asgProd').value, sid = $('#asgSpool').value; if (pid) { const p = state.products[pid]; p.barcode = c; await saveProduct(p); toast('Attached to ' + p.name); } else if (sid) { const s = state.spools[sid]; s.barcode = c; await saveSpool(s); toast('Attached to ' + s.color); } else { toast('Pick a product or a spool', true); return; } closeModal(); renderAll(); return; }
+  if (a === 'assign-save') { const c = el.dataset.code; const pid = $('#asgProd').value, sid = $('#asgSpool').value, aid = $('#asgPart') ? $('#asgPart').value : ''; if (pid) { const p = state.products[pid]; p.barcode = c; await saveProduct(p); toast('Attached to ' + p.name); } else if (sid) { const s = state.spools[sid]; s.barcode = c; await saveSpool(s); toast('Attached to ' + s.color); } else if (aid) { const x = state.parts[aid]; x.barcode = c; await savePart(x); toast('Attached to ' + x.name); } else { toast('Pick a product, a spool or a part', true); return; } closeModal(); renderAll(); return; }
   if (a === 'allowed-remove') { const email = el.dataset.email; await dbWrite(() => sb.from('allowed_users').delete().eq('email', email), 'Could not remove'); state.allowedUsers = state.allowedUsers.filter(x => x !== email); renderSettings(); return; }
   } catch (err) { console.error(err); }
 });
@@ -817,11 +1047,13 @@ function copyText(txt, okMsg){
 document.addEventListener('submit', async e => {
   if (e.target.id === 'scanForm') { e.preventDefault(); const v = $('#scanCode').value; $('#scanCode').value = ''; handleScan(v); return; }
   if (e.target.id === 'passForm') { e.preventDefault(); const a = $('#passNew').value, b2 = $('#passAgain').value; if (a.length < 8) { toast('Use at least 8 characters', true); return; } if (a !== b2) { toast('The two passwords do not match', true); return; } const r = await sb.auth.updateUser({ password: a }); if (r.error) { toast('Could not change it: ' + r.error.message, true); return; } $('#passNew').value = ''; $('#passAgain').value = ''; toast('Password changed'); return; }
+  if (e.target.id === 'printerForm') { e.preventDefault(); const name = $('#printerName').value.trim(); if (!name) return; const model = $('#printerModel').value.trim() || null; try { await savePrinter({ name, model, brand: 'Bambu Lab', position: Object.keys(state.printers).length }); toast(name + ' added'); openPrintersModal(); renderParts(); } catch (err) {} return; }
   if (e.target.id === 'allowedForm') { e.preventDefault(); const email = $('#allowedEmail').value.trim().toLowerCase(); if (!email) return; try { await dbWrite(() => sb.from('allowed_users').upsert({ email }), 'Could not add'); if (state.allowedUsers.indexOf(email) < 0) state.allowedUsers.push(email); state.allowedUsers.sort(); renderSettings(); toast(email + ' can sign in now'); } catch (err) {} return; }
 });
 document.addEventListener('change', async e => {
   const el = e.target;
-  if (el.id === 'pPhotoFile') { const f = el.files && el.files[0]; if (!f) return; draft._photoFile = f; draft._photoPreview = URL.createObjectURL(f); readProductForm(); renderProductModal(true); return; }
+  if (el.id === 'pPhotoFile') { const f = el.files && el.files[0]; if (!f) return; if (partDraft && $('#a_name')) { partDraft._photoFile = f; partDraft._photoPreview = URL.createObjectURL(f); readPartForm(); renderPartModal(true); return; } draft._photoFile = f; draft._photoPreview = URL.createObjectURL(f); readProductForm(); renderProductModal(true); return; }
+  if (el.dataset.printer !== undefined) { el.closest('label').classList.toggle('on', el.checked); return; }
   if (el.dataset.rec !== undefined && el.dataset.field === 'spool_id') { readProductForm(); draft._rec[+el.dataset.rec].spool_id = el.value; renderProductModal(true); return; }
   if (el.dataset.comp !== undefined && el.dataset.field === 'component_id') { readProductForm(); draft._comps[+el.dataset.comp].component_id = el.value; renderProductModal(true); return; }
 });
@@ -829,12 +1061,13 @@ document.addEventListener('input', e => {
   const el = e.target;
   if (el.id === 'wallSearch') { state.ui.q = el.value; renderWall(); return; }
   if (el.id === 'productSearch') { state.ui.productQ = el.value; renderProducts(); return; }
+  if (el.id === 'partSearch') { state.ui.partQ = el.value; renderParts(); return; }
   if (el.id === 'm_hexpick') { const h = $('#m_hex'); if (h) h.value = el.value.toUpperCase(); return; }
   if (el.id === 'm_hex') { const v = el.value.trim(); if (/^#[0-9a-fA-F]{6}$/.test(v)) { const pk = $('#m_hexpick'); if (pk) pk.value = v.toLowerCase(); } return; }
   if (el.dataset.rec !== undefined && ['grams', 'purge_g', 'tower_g'].indexOf(el.dataset.field) >= 0) { draft._rec[+el.dataset.rec][el.dataset.field] = num(el.value); refreshCostbox(); return; }
   if (el.dataset.comp !== undefined && el.dataset.field === 'qty') { draft._comps[+el.dataset.comp].qty = num(el.value); refreshCostbox(); return; }
   if (['p_plate_qty', 'p_plate_hours', 'p_fin', 'p_pack', 'p_price'].indexOf(el.id) >= 0) { readProductForm(); refreshCostbox(); return; }
-  if (el.dataset.setting) { state.settings[el.dataset.setting] = el.value === '' ? 0 : num(el.value); saveSettingsSoon(); renderProducts(); renderRack(); renderReorder(); return; }
+  if (el.dataset.setting) { state.settings[el.dataset.setting] = el.value === '' ? 0 : num(el.value); saveSettingsSoon(); renderProducts(); renderRack(); renderParts(); renderReorder(); renderHome(); return; }
   if (el.dataset.lineprice) {
     const key = el.dataset.lineprice; if (!LINE[key]) return;
     const lps = state.settings.linePrices = state.settings.linePrices || {};
@@ -847,6 +1080,9 @@ document.addEventListener('input', e => {
   }
 });
 document.addEventListener('keydown', e => { if (e.key === 'Escape' && !$('#modal').hidden) closeModal(); });
+document.querySelectorAll('nav.steps a[data-tab]').forEach(a => a.addEventListener('click', e => { e.preventDefault(); goTab(a.dataset.tab); }));
+window.addEventListener('hashchange', () => { const t = location.hash.replace('#', ''); if (TABS[t] && t !== state.ui.tab) { state.ui.tab = t; applyTab(); } });
+(function(){ const t = location.hash.replace('#', ''); if (TABS[t]) state.ui.tab = t; })();
 $('#modal').addEventListener('click', e => { if (e.target === e.currentTarget) closeModal(); });
 
 /* ---------------- auth ---------------- */

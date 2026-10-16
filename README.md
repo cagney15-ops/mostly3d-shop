@@ -15,9 +15,12 @@ Products, filament rack, costing, activity log, reorder list and barcode labels 
 
 ## How it fits together
 
+The page is split into tabs: **Home** (summary, needs-attention list, recent activity, reorder list), **Products**, **Filament** (rack and color wall), **Parts & accessories**, **Activity**, **Labels**, **Settings**. The scan bar sits above every tab.
+
 - **Sign in** is Supabase Auth, email and password. Anyone can create an account, but only emails on the `allowed_users` list can see or change anything (enforced in the database, not just the page). Add or remove people under Settings.
 - **Products** carry a photo and the slicer's filament table: for each color, *Model / Purged / Tower* grams for the whole plate, plus how many units are on the plate and the plate's print time. Everything is divided by the unit count, each color's purge and tower are charged at that color's own price, and the cost per unit is live at your current spool prices. "Single item" is a plate of one. "Made N" pulls N units' worth of filament off the rack (purge and tower included) and adds N to the shelf; "Sold N" takes N off. Both land in Activity and can be undone.
 - **Playsets** bundle products: "Create playset", pick the products and quantities, and the set's cost is their unit costs added up (plus the set's own packaging or finishing). "Assembled N" takes the parts off their shelves and puts N sets on the playset's shelf. A playset can contain another playset.
+- **Parts & accessories** is a scannable inventory for everything that is not filament or a product: nozzles, hotends, plates, belts, tools, consumables. Add your printers once (the Printers button), then tie each part to the printers it fits; untagged parts fit anything. The list filters by printer and by type, has quick +/− buttons, and every part gets a printable `M3D-A-…` label. Scanning a part in Receive mode adds stock; in Made or Sold mode it records the part as used; an unknown package barcode can become a new part on the spot.
 - **Rack** is every spool you own: rolls on hand and grams left on the open roll. Spools under their reorder point turn red and go on the Reorder list.
 - **Color wall** is every Bambu PLA color. The price in each line's header is what you pay per roll for that whole line; a spool can have its own price instead.
 - **Scan bar** takes a Bluetooth barcode scanner (it types like a keyboard) or a code typed by hand. The mode decides what a scan does: Receive, Made, Sold or Look up, times the quantity. Internal labels (`M3D-S-…` for spools, the SKU for products) print from the Labels section. Bambu boxes already carry a barcode; the first scan of a new one asks which color it is and remembers it.
@@ -33,7 +36,7 @@ Vercel is connected to this repository: pushing to `main` deploys production. Th
 
 ## Supabase
 
-Project `mkwthdcpafpmxwpdgbov`. Tables: `allowed_users`, `shop_settings`, `spools`, `gtin_map`, `products`, `product_filaments`, `product_components`, `movements`; storage bucket `product-photos`. All tables have row-level security that allows access only when `is_allowed()` is true for the signed-in email.
+Project `mkwthdcpafpmxwpdgbov`. Tables: `allowed_users`, `shop_settings`, `spools`, `gtin_map`, `products`, `product_filaments`, `product_components`, `parts`, `printers`, `part_printers`, `movements`; storage bucket `product-photos`. All tables have row-level security that allows access only when `is_allowed()` is true for the signed-in email.
 
 In the Supabase dashboard, under Authentication → URL Configuration, the Site URL and Redirect URLs should be the site's address so password-reset and sign-up confirmation links come back to the app.
 
