@@ -1,0 +1,474 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="color-scheme" content="light">
+<meta name="theme-color" content="#ffffff">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="apple-mobile-web-app-title" content="Mostly 3D">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="icon-180.png">
+<link rel="icon" href="icon-192.png" type="image/png">
+<title>Mostly 3D Shop</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,300..700;1,9..144,300..700&family=Jost:wght@400;500;600&family=Great+Vibes&display=swap">
+<style>
+/* Mostly 3D shop, in the 812 Sensory site format: white paper, black ink, heart red for what must stand out.
+   One committed light look; the filament spools and product photos are the only other color on the page. */
+:root{
+  --paper:#ffffff; --panel:#f9f7f5; --panel-2:#f1edea; --ink:#141212; --ink-2:#5f5858; --ink-3:#908787;
+  --line:#e6e0df; --line-2:#cdc4c3; --red:#c41e3a; --red-ink:#a3172f; --red-soft:#fbebee;
+  --shelf:#d8c9b4; --shelf-edge:#b59b7c;
+  --spool-flange:rgba(120,110,110,.22); --spool-hub:#e9e4e2; --spool-hole:#ffffff;
+  --font-display:'Fraunces',Georgia,'Times New Roman',serif;
+  --font-body:'Jost','Helvetica Neue',Arial,sans-serif;
+  --font-script:'Great Vibes','Brush Script MT',cursive;
+  color-scheme:light;
+}
+*{box-sizing:border-box}
+html{background:#fff;-webkit-text-size-adjust:100%}
+body{margin:0;background:var(--paper);color:var(--ink);font-family:var(--font-body);font-size:15px;line-height:1.5;
+  padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px));padding-block:env(safe-area-inset-top,0px) calc(56px + env(safe-area-inset-bottom,0px));}
+.wrap{max-width:1180px;margin:0 auto}
+a{color:inherit}
+h1,h2,h3{margin:0;text-wrap:balance}
+p{margin:0}
+button{font:inherit;color:inherit}
+input,select,textarea{font:inherit;color:inherit}
+input[type=number]{font-variant-numeric:tabular-nums}
+:focus-visible{outline:2px solid var(--red);outline-offset:2px}
+[hidden]{display:none!important}
+@media (prefers-reduced-motion: reduce){*{transition:none!important;animation:none!important}}
+
+/* header */
+header.brand{display:flex;align-items:center;gap:20px;padding-block:18px 14px;border-bottom:1px solid var(--line);flex-wrap:wrap}
+.mark{width:42px;height:66px;flex:none;color:var(--ink)}
+.mark .heart{fill:var(--red)}
+.brand-text{flex:1 1 auto;min-width:0}
+.wordmark{font-family:var(--font-display);font-weight:500;font-size:30px;letter-spacing:.005em;line-height:1;font-variation-settings:"opsz" 72}
+.script{font-family:var(--font-script);color:var(--red);font-size:27px;line-height:.9;margin-top:4px}
+.madein{font-weight:600;font-size:10.5px;letter-spacing:.24em;text-transform:uppercase;color:var(--ink-2);margin-top:8px}
+.status{font-size:11.5px;letter-spacing:.06em;text-transform:uppercase;color:var(--ink-2);display:flex;align-items:center;gap:8px;white-space:nowrap}
+.status .led{width:8px;height:8px;border-radius:50%;background:var(--ink-3);flex:none}
+.status.live .led{background:var(--ink)} .status.saving .led{background:var(--ink-3)} .status.error .led{background:var(--red)}
+.status.error{color:var(--red)}
+.status button{background:none;border:0;padding:0;cursor:pointer;text-decoration:underline;text-underline-offset:3px;color:inherit;letter-spacing:inherit;text-transform:inherit;font-size:inherit}
+
+/* nav + scan bar */
+nav.steps{position:sticky;top:0;z-index:9;background:var(--paper);border-bottom:1px solid var(--line);display:flex;gap:6px;overflow-x:auto;padding-block:10px;scrollbar-width:none}
+nav.steps::-webkit-scrollbar{display:none}
+nav.steps a{text-decoration:none;font-size:12.5px;font-weight:500;letter-spacing:.08em;text-transform:uppercase;padding:8px 13px;border:1px solid var(--line-2);border-radius:999px;white-space:nowrap;color:var(--ink-2)}
+nav.steps a:hover{color:var(--ink);border-color:var(--ink)}
+nav.steps a .n{display:inline-block;min-width:16px;height:16px;line-height:16px;text-align:center;border-radius:999px;background:var(--red);color:#fff;font-size:10px;font-weight:600;margin-left:6px;padding:0 4px;vertical-align:1px}
+.scanbar{position:sticky;top:56px;z-index:8;background:var(--paper);border-bottom:1px solid var(--line);display:flex;align-items:center;gap:8px;padding-block:8px;flex-wrap:wrap}
+.scanbar .lbl{font-size:11px;letter-spacing:.16em;text-transform:uppercase;font-weight:600;color:var(--ink-2);margin-right:4px}
+.scanbar .modes{display:flex;gap:4px}
+.scanbar .modes button{border:1px solid var(--line-2);background:transparent;border-radius:999px;padding:6px 12px;font-size:12.5px;cursor:pointer;color:var(--ink-2);min-height:34px}
+.scanbar .modes button.on{background:var(--ink);color:#fff;border-color:var(--ink)}
+.scanbar .modes button.on.sell{background:var(--red);border-color:var(--red)}
+.scanbar .qty{display:inline-flex;align-items:center;gap:4px;font-size:12.5px;color:var(--ink-2)}
+.scanbar .qty input{width:52px;border:1px solid var(--line-2);border-radius:8px;padding:6px;text-align:center;background:var(--paper)}
+.scanbar .code{flex:1 1 180px;min-width:0;display:flex;gap:6px}
+.scanbar .code input{flex:1;min-width:0;border:1px solid var(--line-2);border-radius:999px;padding:7px 14px;background:var(--paper);font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px}
+.scanbar .hint{font-size:11.5px;color:var(--ink-3);flex-basis:100%}
+.scanbar .flash{flex-basis:100%;font-size:13px;color:var(--ink);padding:6px 0 0}
+.scanbar .flash b{color:var(--red)}
+
+/* sections */
+section.sec{padding-block:36px 10px;scroll-margin-top:118px;border-bottom:1px solid var(--line)}
+section.sec:last-of-type{border-bottom:0}
+.sec-head{display:flex;justify-content:space-between;align-items:flex-end;gap:18px;flex-wrap:wrap;margin-bottom:18px}
+.eyebrow{font-size:11px;letter-spacing:.22em;text-transform:uppercase;font-weight:600;color:var(--red);margin-bottom:6px}
+h2{font-family:var(--font-display);font-weight:400;font-size:30px;line-height:1.1;font-variation-settings:"opsz" 48}
+.lede{color:var(--ink-2);max-width:62ch;margin-top:8px;font-size:14.5px}
+.sec-actions{display:flex;gap:8px;flex-wrap:wrap}
+.fine{font-size:12px;color:var(--ink-3);margin-top:14px;max-width:70ch}
+
+/* buttons, chips */
+.btn{background:var(--ink);color:#fff;border:1px solid var(--ink);border-radius:999px;padding:10px 18px;font-weight:500;font-size:13.5px;cursor:pointer;letter-spacing:.02em;min-height:40px}
+.btn:hover{background:var(--red);border-color:var(--red);color:#fff}
+.btn.ghost{background:transparent;color:var(--ink);border-color:var(--line-2)}
+.btn.ghost:hover{border-color:var(--ink);background:transparent;color:var(--ink)}
+.btn.danger{background:transparent;color:var(--red);border-color:var(--red)}
+.btn.danger:hover{background:var(--red);color:#fff}
+.btn.red{background:var(--red);border-color:var(--red);color:#fff}
+.btn.red:hover{background:var(--red-ink);border-color:var(--red-ink)}
+.btn.small{padding:6px 12px;font-size:12.5px;min-height:32px}
+.btn[disabled]{opacity:.45;cursor:not-allowed}
+.iconbtn{background:transparent;border:1px solid transparent;border-radius:8px;width:32px;height:32px;cursor:pointer;color:var(--ink-3);font-size:18px;line-height:1;display:inline-grid;place-items:center}
+.iconbtn:hover{color:var(--red);border-color:var(--line)}
+.chips{display:flex;flex-wrap:wrap;gap:6px}
+.chip{border:1px solid var(--line-2);background:transparent;border-radius:999px;padding:6px 12px;font-size:12.5px;cursor:pointer;color:var(--ink-2);min-height:32px}
+.chip:hover{border-color:var(--ink);color:var(--ink)}
+.chip.on{background:var(--ink);color:#fff;border-color:var(--ink)}
+.chip.red{color:var(--red);border-color:var(--red)}
+.chip.red.on{background:var(--red);color:#fff;border-color:var(--red)}
+
+/* tiles */
+.tiles{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:12px;margin-bottom:18px}
+@media (max-width:900px){.tiles{grid-template-columns:repeat(3,minmax(0,1fr))}}
+@media (max-width:520px){.tiles{grid-template-columns:repeat(2,minmax(0,1fr))}}
+.tile-num{border:1px solid var(--line);border-radius:12px;padding:14px 16px;background:var(--paper);min-width:0}
+.tile-num .tl{display:block;font-size:11px;letter-spacing:.16em;text-transform:uppercase;font-weight:600;color:var(--ink-2)}
+.tile-num .tv{display:block;font-family:var(--font-display);font-size:34px;line-height:1.05;margin-top:6px;font-variant-numeric:tabular-nums;font-variation-settings:"opsz" 72;overflow-wrap:anywhere}
+.tile-num .ts{display:block;font-size:12.5px;color:var(--ink-2);margin-top:6px}
+.tile-num.accent .tv{color:var(--red-ink)}
+.tile-num.alert{border-color:var(--red)}
+.tile-num.alert .tv{color:var(--red)}
+
+/* products */
+.products{display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:14px}
+.pcard{border:1px solid var(--line);border-radius:14px;background:var(--paper);overflow:hidden;cursor:pointer;text-align:left;padding:0;display:flex;flex-direction:column;min-width:0}
+.pcard:hover{border-color:var(--ink)}
+.pcard .photo{aspect-ratio:4/3;background:var(--panel);display:grid;place-items:center;overflow:hidden;position:relative}
+.pcard .photo img{width:100%;height:100%;object-fit:cover;display:block}
+.pcard .photo .ph{color:var(--ink-3);font-size:12px;letter-spacing:.14em;text-transform:uppercase;font-weight:600}
+.pcard .photo .stock{position:absolute;top:8px;left:8px;background:var(--ink);color:#fff;border-radius:999px;padding:2px 9px;font-size:11px;font-weight:600;font-variant-numeric:tabular-nums}
+.pcard .photo .stock.low{background:var(--red)}
+.pcard .photo .dots{position:absolute;bottom:8px;left:8px;display:flex;gap:3px}
+.pcard .body{padding:10px 12px 12px}
+.pcard .pn{font-family:var(--font-display);font-size:17px;line-height:1.15}
+.pcard .sku{font-size:11px;letter-spacing:.1em;text-transform:uppercase;color:var(--ink-3);margin-top:2px}
+.pcard .nums{display:flex;justify-content:space-between;gap:8px;margin-top:8px;font-size:12.5px;color:var(--ink-2);font-variant-numeric:tabular-nums}
+.pcard .nums b{color:var(--ink);font-weight:500}
+.pcard .nums .m{color:var(--red-ink);font-weight:600}
+.pcard.ex{border-style:dashed}
+.products .empty{grid-column:1/-1}
+.empty{color:var(--ink-2);font-size:14px;padding:18px;border:1px dashed var(--line-2);border-radius:12px;text-align:center}
+
+/* rack */
+.rack-tools{display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin-bottom:14px}
+.shelves{--row:186px;position:relative;display:flex;flex-wrap:wrap;align-content:flex-start;min-height:calc(var(--row) * 2);padding-inline:10px;
+  border-left:4px solid var(--shelf-edge);border-right:4px solid var(--shelf-edge);
+  background:repeating-linear-gradient(to bottom,transparent 0,transparent calc(var(--row) - 16px),var(--shelf) calc(var(--row) - 16px),var(--shelf) calc(var(--row) - 6px),var(--shelf-edge) calc(var(--row) - 6px),var(--shelf-edge) var(--row))}
+.shelf-item{height:var(--row);width:128px;display:flex;flex-direction:column;align-items:center;justify-content:flex-end;padding:0 4px 16px;cursor:pointer;background:none;border:0;border-radius:10px;position:relative}
+.shelf-item:hover .nm{color:var(--red)}
+.shelf-item .ex{font-size:9px;letter-spacing:.1em;text-transform:uppercase;color:var(--ink-3);margin-bottom:2px}
+.shelf-item .nm{font-size:11.5px;line-height:1.2;text-align:center;font-weight:500;margin-bottom:2px;max-width:120px}
+.shelf-item .meta{font-size:10px;color:var(--ink-3);margin-bottom:5px;font-variant-numeric:tabular-nums;letter-spacing:.02em;text-align:center}
+.shelf-item .stock{font-size:10.5px;color:var(--ink-2);font-variant-numeric:tabular-nums;margin-bottom:3px}
+.shelf-item .meter{width:64px;height:4px;background:var(--line);border-radius:2px;overflow:hidden;margin-bottom:7px}
+.shelf-item .meter i{display:block;height:100%;background:var(--ink)}
+.shelf-item.low .meter i,.shelf-item.out .meter i{background:var(--red)}
+.shelf-item .flag{position:absolute;top:8px;right:8px;font-size:9.5px;font-weight:600;letter-spacing:.12em;text-transform:uppercase;color:#fff;background:var(--red);border-radius:999px;padding:2px 7px}
+.shelf-item.out .spool{opacity:.3}
+.shelf-item .rolls{position:absolute;bottom:22px;right:14px;font-size:10px;font-weight:600;color:#fff;background:var(--ink);border-radius:999px;padding:1px 6px;font-variant-numeric:tabular-nums}
+.shelves .empty{position:absolute;inset:0;display:grid;place-items:center;border:0;background:transparent}
+.shelves .empty span{max-width:40ch}
+
+/* wall */
+.wall-tools{display:flex;gap:12px;align-items:flex-start;flex-wrap:wrap;margin-bottom:18px}
+.wall-tools input{flex:1 1 200px;min-width:0;border:1px solid var(--line-2);border-radius:999px;padding:8px 14px;background:var(--paper)}
+.wall-collapse{display:flex;gap:6px}
+.wall-group{margin-bottom:22px}
+.wall-group.collapsed{margin-bottom:10px}
+.wall-group-head{display:flex;align-items:center;gap:14px;flex-wrap:wrap;border-bottom:1px solid var(--line);padding-bottom:6px;margin-bottom:10px}
+.wall-group.collapsed .wall-group-head{margin-bottom:0}
+.wall-group-head h3{font-family:var(--font-display);font-weight:400;font-size:19px}
+.wg-toggle{display:flex;align-items:baseline;gap:10px;background:none;border:0;padding:4px 0;cursor:pointer;text-align:left;flex:1 1 220px;min-width:0}
+.wg-toggle:hover h3{color:var(--red)}
+.wg-toggle .chev{width:8px;height:8px;border-right:1.5px solid var(--ink-2);border-bottom:1.5px solid var(--ink-2);transform:rotate(45deg);align-self:center;flex:none;margin:0 4px 3px 0;transition:transform .15s}
+.wall-group.collapsed .wg-toggle .chev{transform:rotate(-45deg);margin-bottom:0}
+.wg-count{font-size:11.5px;color:var(--ink-3);letter-spacing:.08em;text-transform:uppercase}
+.wg-price{display:flex;align-items:center;gap:8px;font-size:12px;color:var(--ink-2);margin-left:auto;flex-wrap:wrap}
+.lp-tag{font-size:10px;letter-spacing:.14em;text-transform:uppercase;font-weight:600;color:var(--ink-3)}
+.lp-tag.yours{color:var(--red)}
+.wg-price label{display:inline-flex;align-items:center;gap:3px;border:1px solid var(--line-2);border-radius:8px;background:var(--paper);padding:0 8px;color:var(--ink-3)}
+.wg-price label:focus-within{border-color:var(--ink)}
+.wg-price input{border:0;background:transparent;width:60px;padding:6px 0;font-variant-numeric:tabular-nums;text-align:right;color:var(--ink)}
+.wg-price input:focus{outline:none}
+.wall{display:grid;grid-template-columns:repeat(auto-fill,minmax(104px,1fr));gap:10px 6px}
+.tile{position:relative;background:transparent;border:1px solid transparent;border-radius:12px;padding:10px 4px 8px;cursor:pointer;display:flex;flex-direction:column;align-items:center;gap:6px;text-align:center}
+.tile:hover{border-color:var(--line-2);background:var(--panel)}
+.tile .tname{font-size:11.5px;line-height:1.2;font-weight:500}
+.tile .thex{font-size:10px;color:var(--ink-3);font-variant-numeric:tabular-nums;letter-spacing:.04em}
+.tile .onrack{position:absolute;top:6px;right:6px;background:var(--red);color:#fff;font-size:9.5px;font-weight:600;letter-spacing:.08em;text-transform:uppercase;border-radius:999px;padding:2px 7px}
+.spool{display:block;flex:none}
+
+/* cards + fields */
+.card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:16px}
+.field{display:flex;flex-direction:column;gap:4px;min-width:0}
+.field label{font-size:11px;letter-spacing:.14em;text-transform:uppercase;font-weight:600;color:var(--ink-2)}
+.field input,.field select,.field textarea{border:1px solid var(--line-2);background:var(--paper);border-radius:8px;padding:9px 10px;min-width:0;width:100%}
+.field select{width:0;min-width:100%}
+.field textarea{min-height:64px;resize:vertical}
+.field small{font-size:11.5px;color:var(--ink-3)}
+.grid3{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px}
+.grid2{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}
+@media (max-width:640px){.grid3{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media (max-width:420px){.grid3,.grid2{grid-template-columns:1fr}}
+.dot{width:16px;height:16px;border-radius:50%;border:1px solid rgba(0,0,0,.18);display:inline-block;flex:none;vertical-align:-3px}
+.dot.sm{width:12px;height:12px}
+.dot.missing{border:1.5px dashed var(--red);background:transparent}
+.badge-ex{font-size:9.5px;letter-spacing:.1em;text-transform:uppercase;color:var(--ink-2);background:var(--panel-2);border-radius:999px;padding:2px 8px;font-weight:600}
+.tag{display:inline-block;font-size:9.5px;font-weight:600;letter-spacing:.12em;text-transform:uppercase;border-radius:999px;padding:2px 8px;color:#fff;background:var(--red)}
+.tag.ok{background:var(--ink)}
+.tag.mute{background:var(--ink-3)}
+
+/* tables */
+table.list{width:100%;border-collapse:collapse;font-size:13.5px;font-variant-numeric:tabular-nums}
+table.list th{text-align:left;font-size:11px;letter-spacing:.14em;text-transform:uppercase;font-weight:600;color:var(--ink-2);padding:6px 8px 6px 0;border-bottom:1px solid var(--ink)}
+table.list td{padding:8px 8px 8px 0;border-bottom:1px solid var(--line);vertical-align:top}
+table.list th.n,table.list td.n{text-align:right;white-space:nowrap}
+table.list td .sub{display:block;color:var(--ink-3);font-size:12px}
+table.list tr.total td{border-bottom:0;border-top:1px solid var(--ink);font-weight:600}
+.twrap{overflow-x:auto}
+table.breakdown{width:100%;border-collapse:collapse;font-size:13.5px;font-variant-numeric:tabular-nums}
+table.breakdown td{padding:5px 0;border-bottom:1px solid var(--line);vertical-align:top}
+table.breakdown td.n{text-align:right;white-space:nowrap;padding-left:10px}
+table.breakdown span.sub{color:var(--ink-3);font-size:12px}
+table.breakdown tr.total td{border-bottom:0;border-top:1px solid var(--ink);font-family:var(--font-display);font-size:17px;padding-top:9px}
+table.breakdown tr.group td{color:var(--ink-2);font-size:11px;letter-spacing:.14em;text-transform:uppercase;font-weight:600;padding-top:12px;border-bottom:0}
+
+/* settings */
+.settings .card{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:12px;align-items:end}
+.settings .shead{grid-column:1/-1;font-size:11px;letter-spacing:.16em;text-transform:uppercase;font-weight:600;color:var(--ink-2)}
+.settings .shead small{display:block;font-weight:400;letter-spacing:0;text-transform:none;color:var(--ink-3);font-size:12px;margin-top:2px}
+@media (max-width:900px){.settings .card{grid-template-columns:repeat(3,minmax(0,1fr))}}
+@media (max-width:460px){.settings .card{grid-template-columns:repeat(2,minmax(0,1fr))}}
+.allowed{margin-top:16px}
+.allowed .row{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:8px}
+.allowed .row input{flex:1 1 220px;border:1px solid var(--line-2);border-radius:999px;padding:8px 14px;background:var(--paper)}
+.allowed ul{list-style:none;padding:0;margin:10px 0 0}
+.allowed li{display:flex;justify-content:space-between;gap:10px;padding:6px 0;border-bottom:1px solid var(--line);font-size:13.5px}
+
+/* modal + toast */
+.modal{position:fixed;inset:0;z-index:20;background:rgba(20,16,16,.55);display:grid;place-items:center;padding:16px}
+.modal .box{background:var(--paper);color:var(--ink);border-radius:14px;padding:20px;width:min(480px,100%);max-height:calc(100vh - 32px);overflow:auto;border:1px solid var(--line)}
+.modal .box.wide{width:min(860px,100%)}
+.modal .mh{display:flex;gap:14px;align-items:center;margin-bottom:14px}
+.modal .mh h3{font-family:var(--font-display);font-weight:400;font-size:22px}
+.modal .mh .sub{font-size:12px;color:var(--ink-2);letter-spacing:.04em}
+.modal .fields{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.modal .fields .wide{grid-column:1/-1}
+.modal .acts{display:flex;justify-content:space-between;gap:8px;margin-top:16px;flex-wrap:wrap}
+.modal .acts .r{display:flex;gap:8px;margin-left:auto;flex-wrap:wrap}
+.modal .note{font-size:12.5px;color:var(--ink-2);margin-top:10px}
+.modal .quick{display:flex;gap:6px;flex-wrap:wrap;margin-top:10px}
+.modal .confirm{margin-top:12px;border:1px solid var(--red);border-radius:12px;padding:12px 14px;font-size:13.5px}
+.modal .confirm .acts{margin-top:10px;justify-content:flex-start}
+.hexrow{display:flex;gap:8px;align-items:center}
+.hexrow input[type=color]{width:40px;height:38px;padding:2px;border:1px solid var(--line-2);border-radius:8px;background:var(--paper)}
+.pedit{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:18px}
+@media (max-width:700px){.pedit{grid-template-columns:1fr}}
+.pedit .photo{aspect-ratio:4/3;border:1px dashed var(--line-2);border-radius:12px;background:var(--panel);display:grid;place-items:center;overflow:hidden;position:relative}
+.pedit .photo img{width:100%;height:100%;object-fit:cover;display:block}
+.pedit .photo .ph{color:var(--ink-3);font-size:12px;letter-spacing:.14em;text-transform:uppercase;font-weight:600;text-align:center;padding:10px}
+.pedit .photo-acts{display:flex;gap:6px;margin-top:8px;flex-wrap:wrap}
+.recipe{display:flex;flex-direction:column;gap:6px;margin-top:6px}
+.recipe .slot{display:grid;grid-template-columns:18px minmax(0,1fr) 84px 32px;gap:8px;align-items:center}
+.recipe .slot select,.recipe .slot input{border:1px solid var(--line-2);background:var(--paper);border-radius:8px;padding:7px 8px;min-width:0;width:100%;font-size:13px}
+.recipe .slot select{width:0;min-width:100%}
+.recipe .g{position:relative}
+.recipe .g::after{content:"g";position:absolute;right:9px;top:50%;transform:translateY(-50%);font-size:11px;color:var(--ink-3)}
+.recipe .g input{padding-right:22px;text-align:right}
+.costbox{margin-top:12px;border:1px solid var(--line);border-radius:12px;padding:12px 14px}
+.costbox .big{display:flex;justify-content:space-between;align-items:baseline;gap:10px;font-family:var(--font-display);font-size:22px}
+.costbox .big b{color:var(--red-ink);font-weight:500}
+.costbox .margin{font-size:12.5px;color:var(--ink-2);margin-top:2px}
+.stockline{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:12px;padding-top:12px;border-top:1px solid var(--line)}
+.stockline .onhand{font-family:var(--font-display);font-size:26px;font-variant-numeric:tabular-nums}
+.stockline .onhand.low{color:var(--red)}
+.stockline input{width:64px;border:1px solid var(--line-2);border-radius:8px;padding:7px;text-align:center;background:var(--paper)}
+.toast{position:fixed;left:50%;bottom:calc(20px + env(safe-area-inset-bottom,0px));transform:translateX(-50%);background:var(--ink);color:#fff;padding:9px 16px;border-radius:999px;font-size:13px;z-index:30;max-width:calc(100% - 32px)}
+.toast.bad{background:var(--red)}
+
+/* auth */
+.auth{position:fixed;inset:0;z-index:40;background:var(--paper);display:grid;place-items:center;padding:20px;overflow:auto}
+.auth .box{width:min(380px,100%)}
+.auth .brand{border:0;justify-content:center;text-align:center;flex-direction:column;gap:6px;padding-block:0 22px}
+.auth .brand .brand-text{text-align:center}
+.auth .field{margin-top:10px}
+.auth .acts{display:flex;flex-direction:column;gap:8px;margin-top:16px}
+.auth .msg{font-size:13px;color:var(--ink-2);margin-top:12px;text-align:center;min-height:1.4em}
+.auth .msg.bad{color:var(--red)}
+.auth .links{display:flex;justify-content:space-between;gap:10px;margin-top:12px;font-size:12.5px}
+.auth .links button{background:none;border:0;padding:0;cursor:pointer;color:var(--ink-2);text-decoration:underline;text-underline-offset:3px}
+
+/* labels + print */
+.labels-tools{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:14px}
+.labels{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:10px}
+.label{border:1px solid var(--line-2);border-radius:6px;padding:8px 10px;background:#fff;color:#000;display:flex;flex-direction:column;align-items:center;gap:2px;page-break-inside:avoid;break-inside:avoid}
+.label .ln{font-family:var(--font-display);font-size:14px;text-align:center;line-height:1.15}
+.label .ls{font-size:10px;letter-spacing:.12em;text-transform:uppercase;color:#555}
+.label svg{max-width:100%;height:auto}
+@media print{
+  body{padding:0}
+  header.brand,nav.steps,.scanbar,footer,.modal,.toast,.auth,section.sec:not(.printing),.sec-head,.labels-tools,.no-print{display:none!important}
+  section.sec{padding:0;border:0}
+  .labels{grid-template-columns:repeat(3,1fr);gap:4mm}
+  .label{border-color:#bbb}
+}
+footer{margin-top:30px;text-align:center;color:var(--ink-3);font-size:12px}
+footer .script{font-size:22px;color:var(--red)}
+</style>
+</head>
+<body>
+
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <symbol id="indiana" viewBox="0 0 104 162">
+    <path d="M17.3 3.5 L23 6.4 L28 5.6 L36 1.6 L100 0 L100 106 L97 108 L93 116 L92 120 L86 120 L82 121 L78 126 L73 133 L69 139 L66 140 L63 145 L60.5 149 L57 146 L53 142 L49 145 L45 149 L41 152 L37 153 L33 155 L29 154 L25 153 L21 153 L17 151 L12 153 L7 153 L3 157 L2 158 L4 147 L5 145 L11 134 L14 128 L17 123 L16 115 L17.3 104 Z" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linejoin="round" vector-effect="non-scaling-stroke"/>
+    <path class="heart" d="M49 122 C44 117.5 40.5 115 41 111.2 C41.5 108.4 45.5 107.6 49 110.8 C52.5 107.6 56.5 108.4 57 111.2 C57.5 115 54 117.5 49 122 Z"/>
+  </symbol>
+</svg>
+
+<div class="auth" id="auth" hidden>
+  <div class="box">
+    <header class="brand">
+      <svg class="mark" aria-hidden="true"><use href="#indiana"/></svg>
+      <div class="brand-text"><div class="wordmark">Mostly 3D</div><div class="script">shop</div><div class="madein">Made in Southern Indiana</div></div>
+    </header>
+    <form id="authForm" autocomplete="on">
+      <div class="field"><label for="authEmail">Email</label><input id="authEmail" type="email" autocomplete="username" required></div>
+      <div class="field" id="authPassField"><label for="authPass">Password</label><input id="authPass" type="password" autocomplete="current-password"></div>
+      <div class="acts"><button class="btn" type="submit" id="authSubmit">Sign in</button></div>
+      <div class="msg" id="authMsg"></div>
+      <div class="links"><button type="button" id="authForgot">Forgot password</button><button type="button" id="authSignup">Create an account</button></div>
+    </form>
+  </div>
+</div>
+
+<div class="wrap" id="app" hidden>
+  <header class="brand">
+    <svg class="mark" aria-hidden="true"><use href="#indiana"/></svg>
+    <div class="brand-text">
+      <h1 class="wordmark">Mostly 3D</h1>
+      <div class="script">shop</div>
+      <div class="madein">Made in Southern Indiana</div>
+    </div>
+    <div class="status" id="status"><span class="led"></span><span id="statusText">Opening</span><button type="button" id="signOut" title="Sign out">sign out</button></div>
+  </header>
+
+  <nav class="steps" aria-label="Sections">
+    <a href="#products">Products<span class="n" id="navProductsLow" hidden>0</span></a>
+    <a href="#rack">Rack<span class="n" id="navLow" hidden>0</span></a>
+    <a href="#wall">Color wall</a>
+    <a href="#log">Activity</a>
+    <a href="#reorder">Reorder<span class="n" id="navReorder" hidden>0</span></a>
+    <a href="#labels">Labels</a>
+    <a href="#settings">Settings</a>
+  </nav>
+
+  <div class="scanbar" id="scanbar">
+    <span class="lbl">Scan</span>
+    <div class="modes" id="scanModes"></div>
+    <span class="qty">× <input id="scanQty" type="number" inputmode="numeric" min="1" step="1" value="1" aria-label="Quantity per scan"></span>
+    <form class="code" id="scanForm"><input id="scanCode" type="text" placeholder="or type a code and press Enter" autocomplete="off" autocapitalize="off" aria-label="Code"><button class="btn small" type="submit">Go</button></form>
+    <div class="flash" id="scanFlash" hidden></div>
+  </div>
+
+  <main>
+    <section id="products" class="sec">
+      <div class="sec-head">
+        <div>
+          <p class="eyebrow">Catalog</p>
+          <h2>Products</h2>
+          <p class="lede">Everything you make: a photo, the filaments it takes, what it costs at your prices, and how many are on the shelf. Tap one to edit it, make more, or sell some.</p>
+        </div>
+        <div class="sec-actions"><button class="btn" data-action="product-new">New product</button><button class="btn ghost" id="btnRemoveExamples" data-action="remove-examples" hidden>Remove examples</button></div>
+      </div>
+      <div class="tiles" id="productTiles"></div>
+      <div class="rack-tools"><div class="chips" id="productChips"></div><input id="productSearch" type="search" placeholder="Search products" aria-label="Search products" autocomplete="off" style="flex:1 1 180px;min-width:0;border:1px solid var(--line-2);border-radius:999px;padding:8px 14px;background:var(--paper)"></div>
+      <div class="products" id="productGrid"></div>
+    </section>
+
+    <section id="rack" class="sec">
+      <div class="sec-head">
+        <div>
+          <p class="eyebrow">Filament</p>
+          <h2>Your rack</h2>
+          <p class="lede">Every spool you own, rolls on hand and grams left on the open roll. Tap a spool to receive stock, adjust what is left, or take it off the rack.</p>
+        </div>
+        <div class="sec-actions"><button class="btn ghost" data-action="custom-open">Add a non-Bambu spool</button></div>
+      </div>
+      <div class="tiles" id="rackTiles"></div>
+      <div class="rack-tools"><div class="chips" id="rackChips"></div></div>
+      <div class="shelves" id="shelves"></div>
+      <p class="fine">Rolls on hand counts the open roll. The bar under each spool is the open roll; a spool turns red when what is left falls under its reorder point.</p>
+    </section>
+
+    <section id="wall" class="sec">
+      <div class="sec-head">
+        <div>
+          <p class="eyebrow">Add stock</p>
+          <h2>The color wall</h2>
+          <p class="lede">Every Bambu Lab PLA color, grouped by line. Set what you pay per roll in each line's header, then tap a spool to put it on your rack.</p>
+        </div>
+      </div>
+      <div class="wall-tools">
+        <div class="chips" id="lineChips"></div>
+        <input id="wallSearch" type="search" placeholder="Search colors" aria-label="Search colors" autocomplete="off">
+        <div class="wall-collapse"><button class="btn ghost small" data-action="wall-collapse-all">Collapse all</button><button class="btn ghost small" data-action="wall-expand-all">Expand all</button></div>
+      </div>
+      <div id="wallGroups"></div>
+      <p class="fine">Swatches use Bambu Lab's published display hex codes. Dawn Radiance, South Beach and Mystic Magenta are approximations. The price in each line header is what every spool in that line costs unless you give a spool its own price.</p>
+    </section>
+
+    <section id="log" class="sec">
+      <div class="sec-head">
+        <div>
+          <p class="eyebrow">History</p>
+          <h2>Activity</h2>
+          <p class="lede">Everything that moved stock: rolls received, products made and sold, adjustments. Undo puts the stock back.</p>
+        </div>
+        <div class="sec-actions"><button class="btn ghost" data-action="log-export">Export .csv</button></div>
+      </div>
+      <div class="tiles" id="logTiles"></div>
+      <div class="rack-tools"><div class="chips" id="logChips"></div></div>
+      <div class="twrap" id="logList"></div>
+    </section>
+
+    <section id="reorder" class="sec">
+      <div class="sec-head">
+        <div>
+          <p class="eyebrow">Restock</p>
+          <h2>Reorder list</h2>
+          <p class="lede">Spools under their reorder point and products below their shelf minimum.</p>
+        </div>
+        <div class="sec-actions"><button class="btn ghost" data-action="reorder-copy">Copy list</button></div>
+      </div>
+      <div class="twrap" id="reorderList"></div>
+    </section>
+
+    <section id="labels" class="sec">
+      <div class="sec-head">
+        <div>
+          <p class="eyebrow">Scanning</p>
+          <h2>Labels</h2>
+          <p class="lede">Print a barcode for each spool and product. Scanned, a label does whatever the scan bar is set to: receive, make, sell, or look up. Bambu boxes already have a barcode; the first scan of a new one asks which color it is.</p>
+        </div>
+        <div class="sec-actions"><button class="btn" data-action="labels-print">Print labels</button></div>
+      </div>
+      <div class="labels-tools"><div class="chips" id="labelChips"></div></div>
+      <div class="labels" id="labelGrid"></div>
+    </section>
+
+    <section id="settings" class="sec">
+      <div class="sec-head">
+        <div>
+          <p class="eyebrow">Shop</p>
+          <h2>Settings</h2>
+          <p class="lede">Costing assumptions, reorder defaults, and who can sign in.</p>
+        </div>
+      </div>
+      <div class="settings" id="settingsBox"></div>
+      <div class="allowed card" id="allowedBox"></div>
+    </section>
+  </main>
+
+  <footer>
+    <div class="script">made with &hearts; in southern Indiana</div>
+    <div>Energy is charged at a flat rate per printer hour. Flushed and prime-tower grams are priced at the weighted average cost of a product's filament and pulled from each spool in proportion when units are made.</div>
+  </footer>
+</div>
+
+<div id="modal" class="modal" hidden></div>
+<div id="toast" class="toast" hidden></div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jsbarcode/3.11.6/JsBarcode.all.min.js" defer></script>
+<script type="module" src="app.js"></script>
+</body>
+</html>

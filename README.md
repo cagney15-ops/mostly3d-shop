@@ -1,0 +1,43 @@
+# Mostly 3D shop
+
+Products, filament rack, costing, activity log, reorder list and barcode labels for the Mostly 3D shop, as one live site that works on an iPad, a phone or a laptop. The data lives in Supabase (Postgres + Auth + Storage); the site is static and hosted on Vercel, so every push to `main` deploys.
+
+## What is in the folder
+
+| File | What it is |
+| --- | --- |
+| `index.html` | The page: markup and all styling (the 812 Sensory format: white paper, black ink, heart red). |
+| `app.js` | The whole app: sign-in, loading and saving to Supabase, costing math, scanning, labels. No build step, plain ES modules. |
+| `catalog.js` | Every Bambu Lab PLA color with its line and display hex. |
+| `config.js` | The Supabase project URL and anon key. The anon key is public by design; row-level security in the database decides who can read or write. |
+| `manifest.webmanifest`, `icon-*.png` | Lets the site be added to an iPad home screen as an app. |
+| `vercel.json` | Hosting settings (clean URLs, cache headers). |
+
+## How it fits together
+
+- **Sign in** is Supabase Auth, email and password. Anyone can create an account, but only emails on the `allowed_users` list can see or change anything (enforced in the database, not just the page). Add or remove people under Settings.
+- **Products** carry a photo, the filaments they take per unit (the recipe), print hours, flushed and tower grams, finishing minutes and packaging. The cost per unit is live at your current spool prices. "Made N" pulls the filament off the rack (waste in proportion) and adds N to the shelf; "Sold N" takes N off the shelf. Both land in Activity and can be undone.
+- **Rack** is every spool you own: rolls on hand and grams left on the open roll. Spools under their reorder point turn red and go on the Reorder list.
+- **Color wall** is every Bambu PLA color. The price in each line's header is what you pay per roll for that whole line; a spool can have its own price instead.
+- **Scan bar** takes a Bluetooth barcode scanner (it types like a keyboard) or a code typed by hand. The mode decides what a scan does: Receive, Made, Sold or Look up, times the quantity. Internal labels (`M3D-S-…` for spools, the SKU for products) print from the Labels section. Bambu boxes already carry a barcode; the first scan of a new one asks which color it is and remembers it.
+- **Live sync**: every open copy of the page updates within a second or two when someone else changes something.
+
+## Running it
+
+Nothing to install. Open the Vercel URL and sign in. To run a copy locally, serve the folder with any static server (for example `python3 -m http.server 8080`) and open `http://localhost:8080`; it talks to the same database.
+
+## Deploying
+
+Vercel is connected to this repository: pushing to `main` deploys production. There is no build command; the folder is served as is.
+
+## Supabase
+
+Project `mkwthdcpafpmxwpdgbov`. Tables: `allowed_users`, `shop_settings`, `spools`, `gtin_map`, `products`, `product_filaments`, `movements`; storage bucket `product-photos`. All tables have row-level security that allows access only when `is_allowed()` is true for the signed-in email.
+
+In the Supabase dashboard, under Authentication → URL Configuration, the Site URL and Redirect URLs should be the site's address so password-reset and sign-up confirmation links come back to the app.
+
+## Scanner tips
+
+- Any Bluetooth scanner in HID (keyboard) mode works. On an iPad, pair it under Settings → Bluetooth. Most scanners have a button or a config barcode to show or hide the iPad's on-screen keyboard while paired.
+- Scans work from anywhere on the page; nothing has to be focused first. Set the mode and quantity before scanning a batch.
+- Labels print three to a row on Letter paper from the Labels section; Avery 5160-style sheets or a plain sheet cut up both work.
