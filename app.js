@@ -134,6 +134,7 @@ function photoUrl(p){ if (!p || !p.photo_path) return ''; return sb.storage.from
 
 /* ---------------- data ---------------- */
 async function loadAll(){
+  const startedAt = Date.now();
   const [s, sp, pr, pf, mv, gt, au] = await Promise.all([
     sb.from('shop_settings').select('data').eq('id', 1).maybeSingle(),
     sb.from('spools').select('*'),
@@ -145,6 +146,7 @@ async function loadAll(){
   ]);
   const firstErr = [s, sp, pr, pf, mv, gt, au].find(r => r.error);
   if (firstErr) throw firstErr.error;
+  if (lastLocalWrite > startedAt || pendingWrites > 0) { scheduleReload(); return false; } // a write landed meanwhile; this snapshot is stale
   if (!settingsDirty) { state.settings = Object.assign({}, DEFAULT_SETTINGS, (s.data && s.data.data) || {}); if (!state.settings.linePrices) state.settings.linePrices = {}; }
   state.spools = {}; (sp.data || []).forEach(r => state.spools[r.id] = r);
   state.products = {}; (pr.data || []).forEach(r => state.products[r.id] = r);
@@ -152,19 +154,20 @@ async function loadAll(){
   state.movements = mv.data || [];
   state.gtin = {}; (gt.data || []).forEach(r => state.gtin[r.gtin] = r.cat_key);
   state.allowedUsers = (au.data || []).map(r => r.email);
-  state.loaded = true;
+  state.loaded = true; return true;
 }
-let reloadTimer = null, lastLocalWrite = 0;
-function scheduleReload(){ clearTimeout(reloadTimer); reloadTimer = setTimeout(async () => { if (Date.now() - lastLocalWrite < 1200) { scheduleReload(); return; } if (!$('#modal').hidden) { scheduleReload(); return; } try { await loadAll(); renderAll(); } catch (e) { console.warn('reload', e); } }, 500); }
+let reloadTimer = null, lastLocalWrite = 0, pendingWrites = 0, reloading = false;
+function scheduleReload(){ clearTimeout(reloadTimer); reloadTimer = setTimeout(async () => { if (reloading || pendingWrites > 0 || Date.now() - lastLocalWrite < 1200 || !$('#modal').hidden) { scheduleReload(); return; } reloading = true; try { if (await loadAll()) renderAll(); } catch (e) { console.warn('reload', e); } reloading = false; }, 500); }
 let channel = null;
 function subscribe(){
   if (channel) return;
   channel = sb.channel('shop-changes').on('postgres_changes', { event: '*', schema: 'public' }, () => scheduleReload()).subscribe();
 }
 async function dbWrite(fn, what){
-  setStatus('saving'); lastLocalWrite = Date.now();
+  setStatus('saving'); lastLocalWrite = Date.now(); pendingWrites++;
   try { const r = await fn(); if (r && r.error) throw r.error; lastLocalWrite = Date.now(); setStatus('live'); return r; }
   catch (e) { fail(e, what); throw e; }
+  finally { pendingWrites--; }
 }
 async function saveSpool(sp){
   const row = Object.assign({}, sp); delete row.created_at; delete row.updated_at;
@@ -177,7 +180,12 @@ async function saveProduct(p){
   const r = await dbWrite(() => sb.from('products').upsert(row).select().single(), 'Could not save the product');
   state.products[r.data.id] = r.data; return r.data;
 }
-async function deleteProduct(id){ await dbWrite(() => sb.from('products').delete().eq('id', id), 'Could not delete the product'); delete state.products[id]; delete state.pf[id]; }
+async function deleteProduct(id){
+  const p = state.products[id];
+  await dbWrite(() => sb.from('products').delete().eq('id', id), 'Could not delete the product'); delete state.products[id]; delete state.pf[id];
+  if (p && p.photo_path) removePhotos([p.photo_path]);
+}
+async function removePhotos(paths){ try { await sb.storage.from(CONFIG.photoBucket).remove(paths.filter(Boolean)); } catch (e) { console.warn('photo cleanup', e); } }
 async function saveRecipe(productId, rows){
   await dbWrite(() => sb.from('product_filaments').delete().eq('product_id', productId), 'Could not save the filaments');
   const clean = rows.filter(r => r.spool_id || num(r.grams) > 0).map((r, i) => ({ product_id: productId, spool_id: r.spool_id || null, grams: num(r.grams), position: i }));
@@ -202,7 +210,7 @@ async function receiveSpool(sp, n, note){
 async function makeProduct(p, units, note){
   units = Math.max(1, Math.round(units));
   const { c, pulls } = spoolPullFor(p, units); const by = []; const shorts = [];
-  for (const pull of pulls) { const sp = state.spools[pull.spoolId]; if (!sp) continue; const rem = consume(sp, pull.grams); await saveSpool(sp); by.push({ spoolId: sp.id, color: sp.color, lineName: sp.line_name || '', grams: pull.grams }); if (rem > 0.5) shorts.push(sp.color + ' short ' + grams(rem)); }
+  for (const pull of pulls) { const sp = state.spools[pull.spoolId]; if (!sp) continue; const rem = consume(sp, pull.grams); await saveSpool(sp); by.push({ spoolId: sp.id, color: sp.color, lineName: sp.line_name || '', grams: pull.grams, used: Math.round((pull.grams - rem) * 10) / 10 }); if (rem > 0.5) shorts.push(sp.color + ' short ' + grams(rem)); }
   p.on_hand = num(p.on_hand) + units; await saveProduct(p);
   await addMovement({ kind: 'made', product_id: p.id, qty: units, grams: Math.round(c.filamentG * units * 10) / 10, cost: Math.round(c.unit * units * 100) / 100, note: note || null, detail: { by, unit: c.unit, hours: num(p.hours_per_unit) * units, short: shorts.join(', ') || null } });
   return { c, shorts };
@@ -218,7 +226,7 @@ async function adjustProduct(p, newQty, note){
   await addMovement({ kind: 'adjust', product_id: p.id, qty: newQty - from, grams: 0, cost: 0, note: note || null, detail: { from, to: newQty } });
 }
 async function undoMovement(m){
-  if (m.kind === 'made') { const p = state.products[m.product_id]; ((m.detail && m.detail.by) || []).forEach(b => { const sp = state.spools[b.spoolId]; if (sp) restock(sp, num(b.grams)); }); for (const b of ((m.detail && m.detail.by) || [])) { const sp = state.spools[b.spoolId]; if (sp) await saveSpool(sp); } if (p) { p.on_hand = Math.max(0, num(p.on_hand) - num(m.qty)); await saveProduct(p); } }
+  if (m.kind === 'made') { const p = state.products[m.product_id]; ((m.detail && m.detail.by) || []).forEach(b => { const sp = state.spools[b.spoolId]; const g = b.used !== undefined ? num(b.used) : num(b.grams); if (sp && g > 0) restock(sp, g); }); for (const b of ((m.detail && m.detail.by) || [])) { const sp = state.spools[b.spoolId]; if (sp) await saveSpool(sp); } if (p) { p.on_hand = Math.max(0, num(p.on_hand) - num(m.qty)); await saveProduct(p); } }
   else if (m.kind === 'sold') { const p = state.products[m.product_id]; if (p) { p.on_hand = num(p.on_hand) + num(m.qty); await saveProduct(p); } }
   else if (m.kind === 'receive') { const sp = state.spools[m.spool_id]; if (sp) { sp.rolls = Math.max(0, rollsOf(sp) - Math.round(num(m.qty))); if (sp.rolls === 0) sp.open_left = 0; await saveSpool(sp); } }
   else if (m.kind === 'adjust') { if (m.product_id) { const p = state.products[m.product_id]; if (p && m.detail) { p.on_hand = num(m.detail.from); await saveProduct(p); } } else if (m.spool_id) { const sp = state.spools[m.spool_id]; if (sp && m.detail && m.detail.from) { sp.rolls = num(m.detail.from.rolls); sp.open_left = num(m.detail.from.open_left); await saveSpool(sp); } } }
@@ -530,8 +538,8 @@ async function saveProductFromModal(){
   if (isNew) delete row.id;
   try {
     const saved = await saveProduct(row);
-    if (draft._photoFile) { const blob = await resizeImage(draft._photoFile); const path = saved.id + '/' + Date.now() + '.jpg'; const up = await sb.storage.from(CONFIG.photoBucket).upload(path, blob, { contentType: 'image/jpeg', upsert: true }); if (up.error) { fail(up.error, 'Could not upload the photo'); } else { saved.photo_path = path; await saveProduct(saved); } }
-    else if (draft._photoPreview === '' && saved.photo_path) { saved.photo_path = null; await saveProduct(saved); }
+    if (draft._photoFile) { const blob = await resizeImage(draft._photoFile); const path = saved.id + '/' + Date.now() + '.jpg'; const up = await sb.storage.from(CONFIG.photoBucket).upload(path, blob, { contentType: 'image/jpeg', upsert: true }); if (up.error) { fail(up.error, 'Could not upload the photo'); } else { const old = saved.photo_path; saved.photo_path = path; await saveProduct(saved); if (old && old !== path) removePhotos([old]); } }
+    else if (draft._photoPreview === '' && saved.photo_path) { const old = saved.photo_path; saved.photo_path = null; await saveProduct(saved); removePhotos([old]); }
     await saveRecipe(saved.id, draft._rec);
     closeModal(); toast(isNew ? saved.name + ' added' : 'Saved'); renderAll();
   } catch (e) {}
@@ -760,3 +768,4 @@ async function enter(){
 sb.auth.onAuthStateChange((event) => { if (event === 'PASSWORD_RECOVERY') { state.ui.recovery = true; enter(); } });
 renderScanModes();
 enter();
+window.__m3d = { state, productCost, spoolAvailable };
