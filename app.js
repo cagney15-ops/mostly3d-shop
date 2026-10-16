@@ -13,7 +13,7 @@ const state = {
   session: null, allowed: null, loaded: false,
   settings: Object.assign({}, DEFAULT_SETTINGS),
   spools: {}, products: {}, pf: {}, pc: {}, parts: {}, printers: {}, pp: {}, movements: [], gtin: {}, allowedUsers: [],
-  ui: { line: 'all', q: '', rackLine: 'all', lowOnly: false, productQ: '', productFilter: 'all', logKind: 'all', labelKind: 'spools', collapsed: loadCollapsed(), scanMode: 'lookup', recovery: false, tab: 'home', partPrinter: 'all', partCat: 'all', partQ: '', partLowOnly: false }
+  ui: { line: 'all', q: '', rackLine: 'all', lowOnly: false, productQ: '', productFilter: 'all', logKind: 'all', labelKind: 'spools', collapsed: loadCollapsed(), scanMode: 'lookup', recovery: false, tab: 'home', partPrinter: 'all', partCat: 'all', partQ: '', partLowOnly: false, openProduct: null, openSpool: null, openPart: null }
 };
 
 /* ---------------- utils ---------------- */
@@ -176,7 +176,7 @@ async function loadAll(){
     sb.from('parts').select('*'),
     sb.from('printers').select('*').order('position'),
     sb.from('part_printers').select('*'),
-    sb.from('movements').select('*').order('created_at', { ascending: false }).limit(400),
+    sb.from('movements').select('*').gte('created_at', new Date(Date.now() - 365 * 86400000).toISOString()).order('created_at', { ascending: false }).limit(5000),
     sb.from('gtin_map').select('*'),
     sb.from('allowed_users').select('*').order('email')
   ]);
@@ -337,16 +337,17 @@ function renderProducts(){
     const c = productCost(p); const st = productStatus(p); const url = photoUrl(p);
     const dots = isPlayset(p) ? playsetDots(p) : recipe(p).map(r => state.spools[r.spool_id]);
     const sub = isPlayset(p) ? 'Playset · ' + c.comps.length + ' product' + (c.comps.length === 1 ? '' : 's') + (p.sku ? ' · ' + esc(p.sku) : '') : esc(p.sku || p.barcode || '') + (c.n > 1 ? ' · ' + c.n + ' per plate' : '');
-    return '<button class="pcard' + (p.example ? ' ex' : '') + '" data-action="product-open" data-id="' + esc(p.id) + '">' +
+    const open = state.ui.openProduct === p.id;
+    return '<button class="pcard' + (p.example ? ' ex' : '') + (open ? ' open' : '') + '" data-action="product-open" data-id="' + esc(p.id) + '" aria-expanded="' + open + '">' +
       '<div class="photo">' + (url ? '<img src="' + esc(url) + '" alt="" loading="lazy">' : '<span class="ph">no photo yet</span>') +
       '<span class="stock' + (st !== 'ok' ? ' low' : '') + '">' + num(p.on_hand) + (st === 'out' ? ' · out' : st === 'low' ? ' · low' : '') + '</span>' +
       (isPlayset(p) ? '<span class="kindtag">Playset</span>' : '') +
       '<span class="dots">' + dots.slice(0, 8).map(sp => dotHTML(sp, true)).join('') + '</span></div>' +
       '<div class="body"><div class="pn">' + esc(p.name || 'Unnamed product') + (p.archived ? ' <span class="badge-ex">archived</span>' : '') + '</div><div class="sku">' + sub + (p.example ? ' · example' : '') + '</div>' +
-      '<div class="nums"><span>cost <b>' + money(c.unit) + '</b></span><span>' + (num(p.price) > 0 ? 'sells <b>' + money(num(p.price)) + '</b>' : 'no price') + '</span>' + (c.margin !== null ? '<span class="m">' + Math.round(c.margin) + '%</span>' : '') + '</div></div></button>';
+      '<div class="nums"><span>cost <b>' + money(c.unit) + '</b></span><span>' + (num(p.price) > 0 ? 'sells <b>' + money(num(p.price)) + '</b>' : 'no price') + '</span>' + (c.margin !== null ? '<span class="m">' + Math.round(c.margin) + '%</span>' : '') + '</div></div></button>' + (open ? productDetailHTML(p) : '');
   }).join('');
   if (!list.length) html = '<div class="empty">' + (state.ui.productFilter === 'archived' ? 'Nothing archived.' : q ? 'No products match that search.' : 'No products yet. Add one, give it a photo and its filaments, and the cost works itself out.') + '</div>';
-  $('#productGrid').innerHTML = html;
+  $('#productGrid').innerHTML = html; drawCharts($('#productGrid'));
 }
 
 // The colors a playset is made of: every spool in its components' recipes, once each.
@@ -376,7 +377,7 @@ function renderRack(){
   const spools = all.filter(sp => (state.ui.rackLine === 'all' || sp.line === state.ui.rackLine) && (!state.ui.lowOnly || spoolStatus(sp) !== 'ok'));
   let html = spools.map(sp => {
     const st = spoolStatus(sp); const q = rollsOf(sp); const left = openLeft(sp); const roll = effGrams(sp); const pct = roll > 0 ? Math.max(0, Math.min(100, left / roll * 100)) : 0;
-    return '<button class="shelf-item ' + st + '" data-action="spool-edit" data-id="' + esc(sp.id) + '" title="Edit ' + esc(sp.color) + '">' +
+    return '<button class="shelf-item ' + st + (state.ui.openSpool === sp.id ? ' open' : '') + '" data-action="spool-open" data-id="' + esc(sp.id) + '" title="' + esc(sp.color) + '">' +
       (st !== 'ok' ? '<span class="flag">' + st + '</span>' : '') + (sp.example ? '<span class="ex">example</span>' : '') +
       '<span class="nm">' + esc(sp.color) + '</span><span class="meta">' + esc(sp.line_name || '') + ' · ' + money4(ppg(sp)) + '/g' + (sp.location ? ' · ' + esc(sp.location) : '') + '</span>' +
       '<span class="stock">' + (q === 0 ? 'none on hand' : grams(spoolAvailable(sp)) + ' on hand') + '</span>' +
@@ -385,6 +386,7 @@ function renderRack(){
   }).join('');
   if (!spools.length) html += '<div class="empty"><span>' + (all.length ? 'Nothing matches that filter.' : 'Nothing on the rack yet. Tap a spool on the color wall to add it with its price and roll size.') + '</span></div>';
   $('#shelves').innerHTML = html;
+  const osp = state.ui.openSpool ? state.spools[state.ui.openSpool] : null; $('#spoolPanel').innerHTML = osp ? spoolDetailHTML(osp) : ''; if (!osp) state.ui.openSpool = null; drawCharts($('#spoolPanel'));
 }
 
 /* ---------------- render: wall ---------------- */
@@ -497,7 +499,7 @@ function applyTab(){
   document.querySelectorAll('nav.steps a').forEach(a => a.classList.toggle('on', a.dataset.tab === tab));
 }
 function goTab(tab, anchor){
-  if (!TABS[tab]) tab = 'home'; state.ui.tab = tab; applyTab();
+  if (!TABS[tab]) tab = 'home'; state.ui.tab = tab; applyTab(); drawCharts();
   try { history.replaceState(null, '', '#' + tab); } catch (e) {}
   const el = anchor ? document.getElementById(anchor) : null;
   if (el) el.scrollIntoView({ block: 'start' }); else window.scrollTo({ top: 0 });
@@ -521,7 +523,7 @@ function renderHome(){
     tile('log', monthName, money(revenue), sold + ' sold · ' + made + ' made · ' + money(revenue - cogs) + ' gross profit', 'accent');
   const r = reorderRows(); const rows = [];
   r.products.forEach(x => rows.push('<div class="attn"><span class="tag">' + x.status + '</span><span class="what">' + esc(x.p.name) + '<span class="sub">' + x.have + ' on the shelf, minimum ' + x.at + ' · make ' + x.need + '</span></span><button class="btn ghost small" data-action="product-open" data-id="' + esc(x.p.id) + '">Open</button></div>'));
-  r.spools.forEach(x => rows.push('<div class="attn"><span class="tag">' + x.status + '</span><span class="what">' + dotHTML(x.sp, true) + ' ' + esc(x.sp.color) + ' <span class="sub">' + esc(x.sp.line_name || '') + ' · ' + grams(x.avail) + ' left, reorder below ' + grams(x.at) + ' · ' + money(x.cost) + ' a roll</span></span><button class="btn ghost small" data-action="spool-edit" data-id="' + esc(x.sp.id) + '">Open</button></div>'));
+  r.spools.forEach(x => rows.push('<div class="attn"><span class="tag">' + x.status + '</span><span class="what">' + dotHTML(x.sp, true) + ' ' + esc(x.sp.color) + ' <span class="sub">' + esc(x.sp.line_name || '') + ' · ' + grams(x.avail) + ' left, reorder below ' + grams(x.at) + ' · ' + money(x.cost) + ' a roll</span></span><button class="btn ghost small" data-action="spool-open" data-id="' + esc(x.sp.id) + '">Open</button></div>'));
   r.parts.forEach(x => rows.push('<div class="attn"><span class="tag">' + x.status + '</span><span class="what">' + esc(x.pt.name) + '<span class="sub">' + x.have + ' on hand, reorder below ' + x.at + (x.pt.vendor ? ' · ' + esc(x.pt.vendor) : '') + '</span></span><button class="btn ghost small" data-action="part-open" data-id="' + esc(x.pt.id) + '">Open</button></div>'));
   $('#homeAttention').innerHTML = (rows.length ? rows.slice(0, 8).join('') : '<div class="attn"><span class="what" style="color:var(--ink-3)">Everything is stocked.</span></div>') + (rows.length > 8 ? '<button class="more" data-action="go" data-tab="home" data-anchor="reorder">All ' + rows.length + ' on the reorder list</button>' : rows.length ? '<button class="more" data-action="go" data-tab="home" data-anchor="reorder">Full reorder list</button>' : '');
   const recent = state.movements.slice(0, 8).map(m => { const t = movementTarget(m); const name = t ? (t.name || t.color) : '(removed)'; const q = m.kind === 'sold' || m.kind === 'consume' ? '−' + num(m.qty) : m.kind === 'adjust' ? (num(m.qty) > 0 ? '+' : '') + num(m.qty) : '+' + num(m.qty); return '<div class="attn"><span class="tag ' + (m.kind === 'sold' ? '' : 'ok') + '">' + (KIND_LABEL[m.kind] || m.kind) + '</span><span class="what">' + esc(name) + '<span class="sub">' + esc(dateShort(m.created_at)) + ' ' + esc(timeShort(m.created_at)) + (m.actor ? ' · ' + esc(String(m.actor).split('@')[0]) : '') + '</span></span><b style="font-variant-numeric:tabular-nums">' + q + '</b></div>'; });
@@ -559,15 +561,16 @@ function renderParts(){
   if (state.ui.partLowOnly) list = list.filter(pt => partStatus(pt) !== 'ok');
   if (q) list = list.filter(pt => [pt.name, pt.part_no, pt.barcode, pt.category, pt.vendor, pt.location, pt.notes, fitsText(pt)].join(' ').toLowerCase().indexOf(q) >= 0);
   $('#partList').innerHTML = list.length ? list.map(pt => {
-    const st = partStatus(pt); const prs = partPrinters(pt); const url = photoUrl(pt);
-    return '<div class="prow' + (st !== 'ok' ? ' low' : '') + '">' +
+    const st = partStatus(pt); const prs = partPrinters(pt); const url = photoUrl(pt); const open = state.ui.openPart === pt.id;
+    return '<div class="prow' + (st !== 'ok' ? ' low' : '') + (open ? ' open' : '') + '">' +
       '<button class="thumb" data-action="part-open" data-id="' + esc(pt.id) + '" aria-label="Open ' + esc(pt.name) + '">' + (url ? '<img src="' + esc(url) + '" alt="" loading="lazy">' : esc((pt.category || 'part').slice(0, 4))) + '</button>' +
-      '<div><div class="nm">' + esc(pt.name) + (st !== 'ok' ? ' <span class="tag">' + st + '</span>' : '') + '</div><div class="meta">' + (pt.part_no ? '<span>' + esc(pt.part_no) + '</span>' : '') + (pt.vendor ? '<span>' + esc(pt.vendor) + '</span>' : '') + (pt.location ? '<span>' + esc(pt.location) + '</span>' : '') + '<span class="fits">' + (prs.length ? prs.map(p => '<span>' + esc(p.name) + '</span>').join('') : '<span class="any">any printer</span>') + '</span></div></div>' +
+      '<div><div class="nm"><button class="linklike" data-action="part-open" data-id="' + esc(pt.id) + '">' + esc(pt.name) + '</button>' + (st !== 'ok' ? ' <span class="tag">' + st + '</span>' : '') + '</div><div class="meta">' + (pt.part_no ? '<span>' + esc(pt.part_no) + '</span>' : '') + (pt.vendor ? '<span>' + esc(pt.vendor) + '</span>' : '') + (pt.location ? '<span>' + esc(pt.location) + '</span>' : '') + '<span class="fits">' + (prs.length ? prs.map(p => '<span>' + esc(p.name) + '</span>').join('') : '<span class="any">any printer</span>') + '</span></div></div>' +
       '<div class="cat">' + (pt.category ? '<span class="pbadge">' + esc(pt.category) + '</span>' : '') + '</div>' +
       '<div class="qty"><button class="iconbtn" data-action="part-minus" data-id="' + esc(pt.id) + '" aria-label="Used one">−</button><b>' + num(pt.on_hand) + '</b><button class="iconbtn" data-action="part-plus" data-id="' + esc(pt.id) + '" aria-label="Received one">+</button></div>' +
       '<div class="cost">' + (num(pt.cost) ? '<b>' + money(num(pt.cost)) + '</b>each' : '<b>—</b>no cost') + '</div>' +
-      '<button class="iconbtn" data-action="part-open" data-id="' + esc(pt.id) + '" aria-label="Edit">✎</button></div>';
+      '<button class="iconbtn" data-action="part-edit" data-id="' + esc(pt.id) + '" aria-label="Edit">✎</button></div>' + (open ? partDetailHTML(pt) : '');
   }).join('') : '<div class="empty">' + (all.length ? 'No parts match.' : 'No parts yet. Add a nozzle, a hotend, a build plate, and tie each one to the printers it fits. Scanning an unknown barcode in Receive mode can create a part on the spot.') + '</div>';
+  drawCharts($('#partList'));
 }
 
 /* ---------------- parts: modals ---------------- */
@@ -628,6 +631,135 @@ function openPrintersModal(){
     '<form class="row" id="printerForm" style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap"><input id="printerName" type="text" placeholder="name, e.g. X1C #1" required style="flex:1 1 140px;border:1px solid var(--line-2);border-radius:999px;padding:8px 14px"><input id="printerModel" type="text" placeholder="model, e.g. X1 Carbon" style="flex:1 1 140px;border:1px solid var(--line-2);border-radius:999px;padding:8px 14px"><button class="btn small" type="submit">Add printer</button></form>' +
     '<div class="acts"><span class="r"><button class="btn ghost" data-action="modal-close">Close</button><button class="btn" data-action="printers-save">Save names</button></span></div>');
   setTimeout(() => { const f = $('#printerName'); if (f && !printers.length) f.focus(); }, 30);
+}
+
+
+/* ---------------- usage: weekly buckets + charts ---------------- */
+const WEEKS = 12;
+function weekStart(d){ const x = new Date(d); x.setHours(0, 0, 0, 0); const day = (x.getDay() + 6) % 7; x.setDate(x.getDate() - day); return x; }
+function weekBuckets(){ const out = []; const w0 = weekStart(new Date()); for (let i = WEEKS - 1; i >= 0; i--) { const d = new Date(w0); d.setDate(d.getDate() - i * 7); out.push(d); } return out; }
+function bucketIndex(buckets, iso){ const t = new Date(iso).getTime(); for (let i = buckets.length - 1; i >= 0; i--) if (t >= buckets[i].getTime()) return i; return -1; }
+const wkLabel = d => d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+// Returns { buckets, series: [{ name, color, values[] }], totals }
+function usageFor(kind, id){
+  const buckets = weekBuckets(); const z = () => buckets.map(() => 0);
+  if (kind === 'product') {
+    const made = z(), sold = z(); let madeAll = 0, soldAll = 0, revenue = 0, lastMade = null, lastSold = null;
+    state.movements.forEach(m => { if (m.product_id !== id) return; const i = bucketIndex(buckets, m.created_at); if (m.kind === 'made') { madeAll += num(m.qty); if (!lastMade) lastMade = m.created_at; if (i >= 0) made[i] += num(m.qty); } if (m.kind === 'sold') { soldAll += num(m.qty); revenue += num(m.detail && m.detail.revenue); if (!lastSold) lastSold = m.created_at; if (i >= 0) sold[i] += num(m.qty); } });
+    return { buckets, series: [{ name: 'Sold', color: 'var(--red)', values: sold }, { name: 'Made', color: 'var(--ink-3)', values: made }], totals: { madeAll, soldAll, revenue, lastMade, lastSold, soldWeekly: sold.reduce((a, b) => a + b, 0) / WEEKS } };
+  }
+  if (kind === 'spool') {
+    const used = z(); let usedAll = 0, rolls = 0, lastUsed = null;
+    state.movements.forEach(m => { const i = bucketIndex(buckets, m.created_at); if (m.kind === 'made' && m.detail && m.detail.by) m.detail.by.forEach(b => { if (b.spoolId !== id) return; const g = b.used !== undefined ? num(b.used) : num(b.grams); usedAll += g; if (!lastUsed) lastUsed = m.created_at; if (i >= 0) used[i] += g; }); if (m.kind === 'receive' && m.spool_id === id) rolls += num(m.qty); });
+    return { buckets, series: [{ name: 'Grams used', color: 'var(--red)', values: used.map(v => Math.round(v * 10) / 10) }], totals: { usedAll, rolls, lastUsed, weekly: used.reduce((a, b) => a + b, 0) / WEEKS } };
+  }
+  const used = z(); let usedAll = 0, received = 0, lastUsed = null;
+  state.movements.forEach(m => { if (m.part_id !== id) return; const i = bucketIndex(buckets, m.created_at); if (m.kind === 'consume') { const g = m.detail && m.detail.taken !== undefined ? num(m.detail.taken) : num(m.qty); usedAll += g; if (!lastUsed) lastUsed = m.created_at; if (i >= 0) used[i] += g; } if (m.kind === 'receive') received += num(m.qty); });
+  return { buckets, series: [{ name: 'Used', color: 'var(--red)', values: used }], totals: { usedAll, received, lastUsed, weekly: used.reduce((a, b) => a + b, 0) / WEEKS } };
+}
+const CHARTS = {};
+function chartHTML(key, u, unit){
+  CHARTS[key] = { u, unit: unit || '' };
+  const legend = u.series.length > 1 ? '<div class="legend">' + u.series.map(sr => '<span><i style="background:' + sr.color + '"></i>' + esc(sr.name) + '</span>').join('') + '</div>' : '';
+  return legend + '<div class="chart" data-chart="' + esc(key) + '"></div>';
+}
+function drawCharts(root){
+  (root || document).querySelectorAll('.chart[data-chart]').forEach(el => {
+    const c = CHARTS[el.dataset.chart]; if (!c) return; const u = c.u;
+    const W = Math.max(240, el.clientWidth || 480), H = 150, padL = 30, padR = 6, padT = 14, padB = 22;
+    const n = u.buckets.length; const slot = (W - padL - padR) / n; const groups = u.series.length;
+    const max = Math.max(1, ...u.series.map(sr => Math.max(...sr.values)));
+    const nice = (() => { const p = Math.pow(10, Math.floor(Math.log10(max))); const m = max / p; const step = m <= 1 ? 0.25 : m <= 2 ? 0.5 : m <= 5 ? 1 : 2; return Math.ceil(max / (step * p)) * step * p; })();
+    const y = v => padT + (H - padT - padB) * (1 - v / nice);
+    const barW = Math.min(24, Math.max(4, (slot - 6) / groups - 2));
+    let svg = '<svg viewBox="0 0 ' + W + ' ' + H + '" width="' + W + '" height="' + H + '" role="img" aria-label="' + esc(u.series.map(s => s.name).join(' and ')) + ' per week">';
+    [0, 0.5, 1].forEach(f => { const yy = y(nice * f); svg += '<line x1="' + padL + '" x2="' + (W - padR) + '" y1="' + yy.toFixed(1) + '" y2="' + yy.toFixed(1) + '" stroke="var(--line)" stroke-width="1"/><text x="' + (padL - 6) + '" y="' + (yy + 3.5).toFixed(1) + '" text-anchor="end">' + fmtTick(nice * f) + '</text>'; });
+    const maxI = u.series.map(sr => sr.values.indexOf(Math.max(...sr.values)));
+    for (let i = 0; i < n; i++) {
+      const x0 = padL + i * slot + (slot - (barW * groups + 2 * (groups - 1))) / 2;
+      u.series.forEach((sr, gi) => {
+        const v = sr.values[i]; const x = x0 + gi * (barW + 2); const yy = y(v); const h = Math.max(0, H - padB - yy); const r = Math.min(4, h);
+        const path = h > 0 ? 'M' + x.toFixed(1) + ',' + (H - padB) + ' V' + (yy + r).toFixed(1) + ' Q' + x.toFixed(1) + ',' + yy.toFixed(1) + ' ' + (x + r).toFixed(1) + ',' + yy.toFixed(1) + ' H' + (x + barW - r).toFixed(1) + ' Q' + (x + barW).toFixed(1) + ',' + yy.toFixed(1) + ' ' + (x + barW).toFixed(1) + ',' + (yy + r).toFixed(1) + ' V' + (H - padB) + ' Z' : '';
+        if (path) svg += '<path class="bar" d="' + path + '" fill="' + sr.color + '"/>';
+        if (v > 0 && i === maxI[gi] && gi === 0) svg += '<text class="vl" x="' + (x + barW / 2).toFixed(1) + '" y="' + (yy - 4).toFixed(1) + '" text-anchor="middle">' + fmtTick(v) + (c.unit ? ' ' + c.unit : '') + '</text>';
+      });
+      svg += '<rect class="hit" data-i="' + i + '" x="' + (padL + i * slot).toFixed(1) + '" y="' + padT + '" width="' + slot.toFixed(1) + '" height="' + (H - padT - padB) + '" fill="transparent"/>';
+      if (i % 3 === 0 || i === n - 1) svg += '<text x="' + (padL + i * slot + slot / 2).toFixed(1) + '" y="' + (H - 6) + '" text-anchor="middle">' + esc(wkLabel(u.buckets[i])) + '</text>';
+    }
+    svg += '<line x1="' + padL + '" x2="' + (W - padR) + '" y1="' + (H - padB) + '" y2="' + (H - padB) + '" stroke="var(--line-2)" stroke-width="1"/></svg>';
+    el.innerHTML = svg;
+  });
+}
+function fmtTick(v){ if (v >= 1000) return (Math.round(v / 100) / 10) + 'K'; return Math.abs(v - Math.round(v)) < 0.01 ? String(Math.round(v)) : (Math.round(v * 10) / 10).toString(); }
+let ctip = null;
+document.addEventListener('pointermove', e => {
+  const hit = e.target.closest ? e.target.closest('.chart .hit') : null;
+  if (!hit) { if (ctip) { ctip.remove(); ctip = null; } return; }
+  const chartEl = hit.closest('.chart'); const c = CHARTS[chartEl.dataset.chart]; if (!c) return; const i = +hit.dataset.i; const u = c.u;
+  if (!ctip) { ctip = document.createElement('div'); ctip.className = 'ctip'; }
+  if (ctip.parentNode !== chartEl) chartEl.appendChild(ctip);
+  ctip.textContent = ''; const d = document.createElement('div'); d.className = 'd'; const end = new Date(u.buckets[i]); end.setDate(end.getDate() + 6); d.textContent = 'Week of ' + wkLabel(u.buckets[i]) + ' – ' + wkLabel(end); ctip.appendChild(d);
+  u.series.forEach(sr => { const row = document.createElement('div'); const k = document.createElement('span'); k.className = 'k'; k.style.background = sr.color; const b = document.createElement('b'); b.textContent = fmtTick(sr.values[i]) + (c.unit ? ' ' + c.unit : ''); row.appendChild(k); row.appendChild(b); row.appendChild(document.createTextNode(' ' + sr.name.toLowerCase())); ctip.appendChild(row); });
+  const r = chartEl.getBoundingClientRect(); const hr = hit.getBoundingClientRect(); const half = ctip.offsetWidth / 2 + 4;
+  ctip.style.left = Math.max(half, Math.min(r.width - half, hr.left - r.left + hr.width / 2)) + 'px'; ctip.style.top = (hr.top - r.top + 6) + 'px';
+});
+document.addEventListener('pointerleave', () => { if (ctip) { ctip.remove(); ctip = null; } }, true);
+let resizeTimer = null; window.addEventListener('resize', () => { clearTimeout(resizeTimer); resizeTimer = setTimeout(() => drawCharts(), 150); });
+
+/* ---------------- detail panels ---------------- */
+function productDetailHTML(p){
+  const c = productCost(p); const u = usageFor('product', p.id); const url = photoUrl(p); const st = productStatus(p);
+  const colors = c.playset
+    ? c.comps.map(x => '<div class="cr"><span class="pbadge">' + x.qty + ' ×</span>' + esc(x.cp.name) + '<span class="sub">' + money(x.unit) + ' each</span><b>' + money(x.cost) + '</b></div>').join('') + (c.missing.length ? '<div class="cr sub">A product in this set no longer exists</div>' : '')
+    : c.rows.map(x => '<div class="cr">' + dotHTML(x.sp) + esc(x.sp.color) + '<span class="sub">' + esc(x.sp.line_name || '') + (x.purge + x.tower > 0 ? ' · ' + gnum(x.model) + ' + ' + gnum(x.purge + x.tower) + ' waste' : '') + '</span><b>' + grams(x.tot) + '</b></div>').join('') + (c.missing.length ? '<div class="cr sub" style="color:var(--red)">A color here is not on the rack</div>' : '');
+  const weeks = u.totals.soldWeekly > 0 ? num(p.on_hand) / u.totals.soldWeekly : null;
+  return '<div class="pdetail" id="pd-' + esc(p.id) + '"><div>' +
+    '<div class="dhead">' + (url ? '<img src="' + esc(url) + '" alt="">' : '<div class="dph">no photo</div>') + '<div><h3>' + esc(p.name) + '</h3><div class="sub">' + (c.playset ? 'Playset · ' + c.comps.length + ' products' : (p.sku ? esc(p.sku) + ' · ' : '') + (c.n > 1 ? c.n + ' per plate' : 'single item')) + (p.barcode ? ' · label ' + esc(p.barcode) : '') + '</div></div></div>' +
+    '<div class="facts">' +
+      '<div><span class="fl">Cost</span><span class="fv">' + money(c.unit) + '</span><span class="fs">per ' + (c.playset ? 'set' : 'unit') + '</span></div>' +
+      '<div><span class="fl">Sells</span><span class="fv red">' + (c.price > 0 ? money(c.price) : '—') + '</span><span class="fs">' + (c.margin !== null ? Math.round(c.margin) + '% margin' : 'no price yet') + '</span></div>' +
+      '<div><span class="fl">On shelf</span><span class="fv' + (st !== 'ok' ? ' red' : '') + '">' + num(p.on_hand) + '</span><span class="fs">' + (st !== 'ok' ? st + ' · minimum ' + productMin(p) : weeks ? '≈ ' + (weeks >= 52 ? '1+ yr' : Math.round(weeks) + ' wk') + ' at this pace' : 'minimum ' + productMin(p)) + '</span></div>' +
+      (c.playset ? '' : '<div><span class="fl">Print time</span><span class="fv">' + (Math.round(c.hours * 100) / 100) + ' h</span><span class="fs">per unit' + (c.n > 1 ? ' · ' + num(p.plate_hours) + ' h plate' : '') + '</span></div>') +
+      (c.playset ? '' : '<div><span class="fl">Filament</span><span class="fv">' + grams(c.g) + '</span><span class="fs">per unit, waste included</span></div>') +
+      '<div><span class="fl">Energy</span><span class="fv">' + money(c.energy) + '</span><span class="fs">' + (c.labor + c.packaging > 0 ? '+ ' + money(c.labor + c.packaging) + ' finish & pack' : 'per unit') + '</span></div>' +
+    '</div>' +
+    '<div class="usage"><h4>' + (c.playset ? 'What goes in it' : 'Colors used') + '</h4></div><div class="colors">' + (colors || '<div class="cr sub">Nothing entered yet</div>') + '</div>' +
+    (p.description ? '<p class="note" style="margin-top:10px">' + esc(p.description) + '</p>' : '') +
+    '<div class="dacts"><input type="number" inputmode="numeric" min="1" step="1" value="' + (c.playset ? 1 : c.n) + '" id="pdN-' + esc(p.id) + '" aria-label="How many"><button class="btn small" data-action="pd-make" data-id="' + esc(p.id) + '">' + (c.playset ? 'Assembled' : 'Made') + '</button><button class="btn red small" data-action="pd-sell" data-id="' + esc(p.id) + '">Sold</button><span class="sp"></span><button class="btn ghost small" data-action="product-edit" data-id="' + esc(p.id) + '">Edit</button><button class="iconbtn close" data-action="product-open" data-id="' + esc(p.id) + '" aria-label="Close">×</button></div>' +
+    '</div><div class="usage"><h4>Usage</h4><div class="usub">Made and sold per week, last ' + WEEKS + ' weeks</div>' + chartHTML('product:' + p.id, u) +
+    '<div class="totals"><span>sold <b>' + u.totals.soldAll + '</b></span><span>made <b>' + u.totals.madeAll + '</b></span><span>sales <b>' + money(u.totals.revenue) + '</b></span>' + (u.totals.lastSold ? '<span>last sold <b>' + esc(dateShort(u.totals.lastSold)) + '</b></span>' : '') + '</div></div></div>';
+}
+function spoolDetailHTML(sp){
+  const u = usageFor('spool', sp.id); const st = spoolStatus(sp); const avail = spoolAvailable(sp); const roll = effGrams(sp);
+  const usedIn = sortProducts(Object.values(state.products).filter(p => !p.archived && recipe(p).some(r => r.spool_id === sp.id)));
+  const weeksLeft = u.totals.weekly > 0 ? avail / u.totals.weekly : null;
+  return '<div class="pdetail" id="sd-' + esc(sp.id) + '"><div>' +
+    '<div class="dhead">' + spoolSVG(sp, 72) + '<div><h3>' + esc(sp.color) + '</h3><div class="sub">' + esc(sp.line_name || '') + (sp.hex ? ' · ' + esc(sp.hex) : '') + ' · label ' + esc(sp.barcode || '') + (sp.location ? ' · ' + esc(sp.location) : '') + '</div></div></div>' +
+    '<div class="facts">' +
+      '<div><span class="fl">On hand</span><span class="fv' + (st !== 'ok' ? ' red' : '') + '">' + grams(avail) + '</span><span class="fs">' + rollsOf(sp) + ' roll' + (rollsOf(sp) === 1 ? '' : 's') + (rollsOf(sp) ? ', ' + grams(openLeft(sp)) + ' on the open one' : '') + '</span></div>' +
+      '<div><span class="fl">Price</span><span class="fv">' + money4(ppg(sp)) + '</span><span class="fs">per g · ' + money(effCost(sp)) + ' a ' + grams(roll) + ' roll' + (followsLine(sp) ? ' (line price)' : '') + '</span></div>' +
+      '<div><span class="fl">Reorder</span><span class="fv">' + grams(reorderPoint(sp)) + '</span><span class="fs">' + (st !== 'ok' ? st + ' now' : weeksLeft ? '≈ ' + (weeksLeft >= 52 ? '1+ yr' : Math.round(weeksLeft) + ' wk') + ' left at this pace' : 'no use yet') + '</span></div>' +
+    '</div>' +
+    '<div class="usage"><h4>Used in</h4></div><div class="colors">' + (usedIn.length ? usedIn.map(p => { const r = recipe(p).filter(x => x.spool_id === sp.id); const g = r.reduce((a, x) => a + (num(x.grams) + num(x.purge_g) + num(x.tower_g)), 0) / plateQty(p); return '<div class="cr"><button class="btn ghost small" data-action="product-open" data-id="' + esc(p.id) + '">' + esc(p.name) + '</button><b>' + grams(g) + ' / unit</b></div>'; }).join('') : '<div class="cr sub">No product uses this color yet</div>') + '</div>' +
+    (sp.notes ? '<p class="note" style="margin-top:10px">' + esc(sp.notes) + '</p>' : '') +
+    '<div class="dacts"><button class="btn small" data-action="quick-receive" data-id="' + esc(sp.id) + '">+1 roll received</button><span class="sp"></span><button class="btn ghost small" data-action="spool-edit" data-id="' + esc(sp.id) + '">Edit</button><button class="iconbtn close" data-action="spool-open" data-id="' + esc(sp.id) + '" aria-label="Close">×</button></div>' +
+    '</div><div class="usage"><h4>Usage</h4><div class="usub">Grams pulled off this spool per week, last ' + WEEKS + ' weeks</div>' + chartHTML('spool:' + sp.id, u, 'g') +
+    '<div class="totals"><span>used <b>' + grams(u.totals.usedAll) + '</b></span><span>≈ <b>' + grams(u.totals.weekly) + '</b> a week</span><span>received <b>' + u.totals.rolls + ' roll' + (u.totals.rolls === 1 ? '' : 's') + '</b></span>' + (u.totals.lastUsed ? '<span>last used <b>' + esc(dateShort(u.totals.lastUsed)) + '</b></span>' : '') + '</div></div></div>';
+}
+function partDetailHTML(pt){
+  const u = usageFor('part', pt.id); const st = partStatus(pt); const url = photoUrl(pt); const prs = partPrinters(pt);
+  const weeksLeft = u.totals.weekly > 0 ? num(pt.on_hand) / u.totals.weekly : null;
+  return '<div class="pdetail part" id="ad-' + esc(pt.id) + '"><div>' +
+    '<div class="dhead">' + (url ? '<img src="' + esc(url) + '" alt="">' : '<div class="dph">' + esc((pt.category || 'part').slice(0, 5)) + '</div>') + '<div><h3>' + esc(pt.name) + '</h3><div class="sub">' + esc([pt.part_no, pt.category, pt.vendor, pt.barcode ? 'label ' + pt.barcode : ''].filter(Boolean).join(' · ')) + '</div></div></div>' +
+    '<div class="facts">' +
+      '<div><span class="fl">On hand</span><span class="fv' + (st !== 'ok' ? ' red' : '') + '">' + num(pt.on_hand) + '</span><span class="fs">' + (st !== 'ok' ? st + ' · reorder below ' + partMin(pt) : weeksLeft ? '≈ ' + (weeksLeft >= 52 ? '1+ yr' : Math.round(weeksLeft) + ' wk') + ' at this pace' : 'reorder below ' + partMin(pt)) + '</span></div>' +
+      '<div><span class="fl">Cost</span><span class="fv">' + (num(pt.cost) ? money(num(pt.cost)) : '—') + '</span><span class="fs">' + (num(pt.cost) ? money(num(pt.cost) * num(pt.on_hand)) + ' on hand' : 'no cost entered') + '</span></div>' +
+      '<div><span class="fl">Fits</span><span class="fv" style="font-size:15px;line-height:1.3">' + (prs.length ? prs.map(p => esc(p.name)).join(', ') : 'Any printer') + '</span><span class="fs">' + (pt.location ? esc(pt.location) : '') + '</span></div>' +
+    '</div>' +
+    (pt.notes ? '<p class="note">' + esc(pt.notes) + '</p>' : '') +
+    '<div class="dacts"><input type="number" inputmode="decimal" min="0" step="any" value="1" id="adN-' + esc(pt.id) + '" aria-label="How many"><button class="btn small" data-action="ad-recv" data-id="' + esc(pt.id) + '">Received</button><button class="btn red small" data-action="ad-use" data-id="' + esc(pt.id) + '">Used</button>' + (pt.link ? '<a class="btn ghost small" href="' + esc(pt.link) + '" target="_blank" rel="noopener">Reorder link</a>' : '') + '<span class="sp"></span><button class="btn ghost small" data-action="part-edit" data-id="' + esc(pt.id) + '">Edit</button><button class="iconbtn close" data-action="part-open" data-id="' + esc(pt.id) + '" aria-label="Close">×</button></div>' +
+    '</div><div class="usage"><h4>Usage</h4><div class="usub">Used per week, last ' + WEEKS + ' weeks</div>' + chartHTML('part:' + pt.id, u) +
+    '<div class="totals"><span>used <b>' + u.totals.usedAll + '</b></span><span>received <b>' + u.totals.received + '</b></span>' + (u.totals.lastUsed ? '<span>last used <b>' + esc(dateShort(u.totals.lastUsed)) + '</b></span>' : '') + '</div></div></div>';
 }
 
 /* ---------------- render: settings ---------------- */
@@ -872,20 +1004,20 @@ async function handleScan(raw){
   if (hit.kind === 'spool') {
     const sp = hit.item;
     if (mode === 'receive') { try { await receiveSpool(sp, qty, 'scan'); flash('<b>' + esc(sp.color) + '</b> +' + qty + ' roll' + (qty === 1 ? '' : 's') + ', now ' + rollsOf(sp) + ' on hand'); renderAll(); } catch (e) {} return; }
-    if (mode === 'lookup') { openEditModal(sp.id); return; }
+    if (mode === 'lookup') { openDetail('spool', sp.id, true); return; }
     flash('<b>' + esc(sp.color) + '</b> is filament; switch to Receive to add rolls or Look up to edit it.', true); return;
   }
   if (hit.kind === 'part') {
     const pt = hit.item; const where = fitsText(pt);
     if (mode === 'receive') { try { await receivePart(pt, qty, 'scan'); flash('<b>' + esc(pt.name) + '</b> +' + qty + ', now ' + num(pt.on_hand) + ' on hand · fits ' + esc(where)); renderAll(); } catch (e) {} return; }
     if (mode === 'made' || mode === 'sold') { const had = num(pt.on_hand); try { await usePart(pt, qty, 'scan'); flash('Used ' + qty + ' × <b>' + esc(pt.name) + '</b>, ' + num(pt.on_hand) + ' left · fits ' + esc(where) + (had < qty ? ' · <b>only ' + had + ' were on hand</b>' : ''), had < qty); renderAll(); } catch (e) {} return; }
-    openPartModal(pt.id); return;
+    openDetail('part', pt.id, true); return;
   }
   const p = hit.item;
   if (mode === 'made') { try { const r = await makeProduct(p, qty, 'scan'); flash('Made ' + qty + ' × <b>' + esc(p.name) + '</b>, ' + num(p.on_hand) + ' on the shelf' + (r.shorts.length ? ' · ' + esc(r.shorts.join(', ')) : '')); renderAll(); } catch (e) {} return; }
   if (mode === 'sold') { if (num(p.on_hand) < qty) flash('Only ' + num(p.on_hand) + ' of <b>' + esc(p.name) + '</b> on the shelf; selling anyway.', true); try { await sellProduct(p, qty, 'scan'); flash('Sold ' + qty + ' × <b>' + esc(p.name) + '</b>, ' + num(p.on_hand) + ' left'); renderAll(); } catch (e) {} return; }
   if (mode === 'receive') { try { await adjustProduct(p, num(p.on_hand) + qty, 'scan receive'); flash('<b>' + esc(p.name) + '</b> +' + qty + ', now ' + num(p.on_hand) + ' on the shelf'); renderAll(); } catch (e) {} return; }
-  openProductModal(p.id);
+  openDetail('product', p.id, true);
 }
 function openGtinModal(gtin, qty){
   openModal('<div class="mh"><div><h3>New barcode</h3><div class="sub">' + esc(gtin) + ' · which Bambu color is in this box?</div></div></div>' +
@@ -924,6 +1056,16 @@ document.addEventListener('keydown', e => {
   scanBuf += e.key; scanLast = now;
 }, true);
 
+// Expand an item's detail panel in place (toggle), switching to its tab when needed.
+function openDetail(kind, id, force){
+  const key = kind === 'product' ? 'openProduct' : kind === 'spool' ? 'openSpool' : 'openPart';
+  const tab = kind === 'product' ? 'products' : kind === 'spool' ? 'filament' : 'parts';
+  const wasOpen = state.ui[key] === id; state.ui[key] = (wasOpen && !force) ? null : id;
+  if (state.ui.tab !== tab) goTab(tab);
+  if (kind === 'product') renderProducts(); else if (kind === 'spool') renderRack(); else renderParts();
+  if (state.ui[key]) { const el = document.getElementById((kind === 'product' ? 'pd-' : kind === 'spool' ? 'sd-' : 'ad-') + id); if (el) setTimeout(() => el.scrollIntoView({ block: 'nearest', behavior: 'smooth' }), 30); }
+}
+
 /* ---------------- events ---------------- */
 document.addEventListener('click', async e => {
   const el = e.target.closest('[data-action]'); if (!el) return;
@@ -936,7 +1078,8 @@ document.addEventListener('click', async e => {
   if (a === 'part-low') { state.ui.partLowOnly = !state.ui.partLowOnly; renderParts(); return; }
   if (a === 'part-new') { openPartModal(null); return; }
   if (a === 'part-new-code') { closeModal(); openPartModal(null, { barcode: el.dataset.code }); return; }
-  if (a === 'part-open') { openPartModal(id); return; }
+  if (a === 'part-open') { openDetail('part', id); return; }
+  if (a === 'part-edit') { openPartModal(id); return; }
   if (a === 'part-plus') { const pt = state.parts[id]; if (!pt) return; await receivePart(pt, 1); renderParts(); renderHome(); renderReorder(); renderLog(); return; }
   if (a === 'part-minus') { const pt = state.parts[id]; if (!pt) return; if (num(pt.on_hand) <= 0) { toast('None on hand', true); return; } await usePart(pt, 1); renderParts(); renderHome(); renderReorder(); renderLog(); return; }
   if (a === 'pphoto-pick') { $('#pPhotoFile').click(); return; }
@@ -1014,7 +1157,12 @@ document.addEventListener('click', async e => {
   if (a === 'mode-unit' || a === 'mode-plate') { readProductForm(); draft._mode = a === 'mode-unit' ? 'unit' : 'plate'; if (draft._mode === 'plate' && plateQty(draft) < 2) draft.plate_qty = 2; renderProductModal(true); return; }
   if (a === 'comp-add') { readProductForm(); draft._comps.push({ component_id: '', qty: 1 }); renderProductModal(true); return; }
   if (a === 'comp-remove') { readProductForm(); draft._comps.splice(+el.dataset.i, 1); if (!draft._comps.length) draft._comps.push({ component_id: '', qty: 1 }); renderProductModal(true); return; }
-  if (a === 'product-open') { openProductModal(id); return; }
+  if (a === 'product-open') { openDetail('product', id); return; }
+  if (a === 'product-edit') { openProductModal(id); return; }
+  if (a === 'spool-open') { openDetail('spool', id); return; }
+  if (a === 'quick-receive') { const sp = state.spools[id]; if (!sp) return; await receiveSpool(sp, 1); toast(sp.color + ' +1 roll'); renderAll(); return; }
+  if (a === 'pd-make' || a === 'pd-sell') { const p = state.products[id]; if (!p) return; const inp = document.getElementById('pdN-' + id); const n = Math.max(1, Math.round(num(inp && inp.value))); if (a === 'pd-make') { const r = await makeProduct(p, n); toast((isPlayset(p) ? 'Assembled ' : 'Made ') + n + ', ' + num(p.on_hand) + ' on the shelf' + (r.shorts.length ? ' · ' + r.shorts.join(', ') : ''), r.shorts.length > 0); } else { await sellProduct(p, n); toast('Sold ' + n + ', ' + num(p.on_hand) + ' left'); } renderAll(); return; }
+  if (a === 'ad-recv' || a === 'ad-use') { const pt = state.parts[id]; if (!pt) return; const inp = document.getElementById('adN-' + id); const n = num(inp && inp.value); if (n <= 0) return; if (a === 'ad-recv') { await receivePart(pt, n); toast('Received ' + n); } else { const had = num(pt.on_hand); await usePart(pt, n); toast('Used ' + n + (had < n ? ' (only ' + had + ' were on hand)' : ''), had < n); } renderAll(); return; }
   if (a === 'photo-pick') { $('#pPhotoFile').click(); return; }
   if (a === 'photo-clear') { draft._photoFile = null; draft._photoPreview = ''; readProductForm(); renderProductModal(true); return; }
   if (a === 'rec-add') { readProductForm(); draft._rec.push({ spool_id: '', grams: 0, purge_g: 0, tower_g: 0 }); renderProductModal(true); return; }

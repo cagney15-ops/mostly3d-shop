@@ -361,6 +361,8 @@ table.breakdown tr.group td{color:var(--ink-2);font-size:11px;letter-spacing:.14
 .prow .thumb{width:44px;height:44px;border-radius:8px;background:var(--panel);object-fit:cover;display:grid;place-items:center;border:1px solid var(--line);color:var(--ink-3);font-size:10px;letter-spacing:.1em;text-transform:uppercase;overflow:hidden;padding:0;cursor:pointer;font-family:inherit}
 .prow .thumb img{width:100%;height:100%;object-fit:cover}
 .prow .nm{font-weight:500;font-size:14px;line-height:1.2}
+.linklike{background:none;border:0;padding:0;font:inherit;color:inherit;cursor:pointer;text-align:left}
+.linklike:hover{color:var(--red)}
 .prow .meta{font-size:11.5px;color:var(--ink-3);margin-top:2px;display:flex;gap:6px;flex-wrap:wrap;align-items:center}
 .prow .fits{display:flex;gap:4px;flex-wrap:wrap}
 .prow .fits span,.pbadge{font-size:10px;letter-spacing:.08em;text-transform:uppercase;font-weight:600;color:var(--ink-2);background:var(--panel-2);border-radius:999px;padding:2px 8px}
@@ -380,6 +382,50 @@ table.breakdown tr.group td{color:var(--ink-2);font-size:11px;letter-spacing:.14
 .checks label{display:inline-flex;align-items:center;gap:6px;border:1px solid var(--line-2);border-radius:999px;padding:5px 11px;font-size:12.5px;cursor:pointer;user-select:none}
 .checks label.on{background:var(--ink);color:#fff;border-color:var(--ink)}
 .checks input{position:absolute;opacity:0;width:0;height:0}
+
+/* expanded detail panels + usage charts */
+.pdetail{grid-column:1/-1;border:1px solid var(--line-2);border-radius:14px;padding:16px 18px;background:var(--paper);display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.3fr);gap:18px;animation:pd-in .18s ease-out}
+@keyframes pd-in{from{opacity:0;transform:translateY(-4px)}to{opacity:1;transform:none}}
+@media (max-width:760px){.pdetail{grid-template-columns:1fr}}
+.pdetail .dhead{display:flex;gap:14px;align-items:center;margin-bottom:10px}
+.pdetail .dhead img,.pdetail .dhead .dph{width:72px;height:72px;border-radius:10px;object-fit:cover;background:var(--panel);border:1px solid var(--line);flex:none;display:grid;place-items:center;font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:var(--ink-3)}
+.pdetail .dhead h3{font-family:var(--font-display);font-weight:400;font-size:22px;line-height:1.1;margin:0}
+.pdetail .dhead .sub{font-size:12.5px;color:var(--ink-2);margin-top:3px}
+.pdetail .facts{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px 12px;margin:10px 0}
+.pdetail .facts div{min-width:0}
+.pdetail .facts .fl{display:block;font-size:10.5px;letter-spacing:.14em;text-transform:uppercase;font-weight:600;color:var(--ink-3)}
+.pdetail .facts .fv{display:block;font-family:var(--font-display);font-size:20px;line-height:1.15;font-variant-numeric:tabular-nums;overflow-wrap:anywhere}
+.pdetail .facts .fv.red{color:var(--red-ink)}
+.pdetail .facts .fs{display:block;font-size:11.5px;color:var(--ink-2)}
+.pdetail .colors{display:flex;flex-direction:column;gap:5px;margin-top:4px}
+.pdetail .colors .cr{display:flex;align-items:center;gap:8px;font-size:13px}
+.pdetail .colors .cr .sub{color:var(--ink-3);font-size:11.5px}
+.pdetail .colors .cr b{margin-left:auto;font-weight:500;font-variant-numeric:tabular-nums}
+.pdetail .dacts{display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-top:12px;padding-top:12px;border-top:1px solid var(--line)}
+.pdetail .dacts input{width:58px;border:1px solid var(--line-2);border-radius:8px;padding:7px;text-align:center;background:var(--paper)}
+.pdetail .dacts .sp{flex:1}
+.pdetail .close{margin-left:auto}
+.usage h4{font-size:11px;letter-spacing:.16em;text-transform:uppercase;font-weight:600;color:var(--ink-2);margin:0 0 2px}
+.usage .usub{font-size:12px;color:var(--ink-3);margin-bottom:8px}
+.usage .legend{display:flex;gap:14px;font-size:12px;color:var(--ink-2);margin-bottom:6px}
+.usage .legend i{display:inline-block;width:10px;height:10px;border-radius:3px;margin-right:6px;vertical-align:-1px}
+.usage .totals{display:flex;gap:16px;flex-wrap:wrap;font-size:12.5px;color:var(--ink-2);margin-top:8px}
+.usage .totals b{color:var(--ink);font-weight:500;font-variant-numeric:tabular-nums}
+.chart{position:relative;width:100%}
+.chart svg{display:block;width:100%;height:auto;overflow:visible}
+.chart .bar{transition:opacity .12s}
+.chart .hit:hover ~ .bar{opacity:.8}
+.chart text{font-family:var(--font-body);fill:var(--ink-3);font-size:11px}
+.chart .vl{fill:var(--ink-2);font-weight:500}
+.ctip{position:absolute;pointer-events:none;background:var(--ink);color:#fff;border-radius:8px;padding:7px 10px;font-size:12px;line-height:1.35;white-space:nowrap;z-index:5;transform:translate(-50%,-100%);box-shadow:0 4px 14px rgba(0,0,0,.18)}
+.ctip b{font-weight:600;font-variant-numeric:tabular-nums}
+.ctip .k{display:inline-block;width:10px;height:3px;border-radius:2px;margin-right:6px;vertical-align:middle}
+.ctip .d{opacity:.7;margin-bottom:2px}
+.shelf-item.open{outline:2px solid var(--red);outline-offset:2px}
+.spool-panel{margin-top:14px}
+.prow.open{border-color:var(--ink)}
+.pdetail.part{margin:-2px 0 4px}
+.pcard.open{border-color:var(--ink)}
 @media print{
   body{padding:0}
   header.brand,nav.steps,.scanbar,footer,.modal,.toast,.auth,section.sec:not(.printing),.sec-head,.labels-tools,.no-print{display:none!important}
@@ -487,6 +533,7 @@ footer .script{font-size:22px;color:var(--red)}
       <div class="tiles" id="rackTiles"></div>
       <div class="rack-tools"><div class="chips" id="rackChips"></div></div>
       <div class="shelves" id="shelves"></div>
+      <div class="spool-panel" id="spoolPanel"></div>
       <p class="fine">Rolls on hand counts the open roll. The bar under each spool is the open roll; a spool turns red when what is left falls under its reorder point.</p>
     </section>
 
