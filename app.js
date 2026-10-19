@@ -13,7 +13,7 @@ const state = {
   session: null, allowed: null, loaded: false,
   settings: Object.assign({}, DEFAULT_SETTINGS),
   spools: {}, products: {}, pf: {}, pc: {}, parts: {}, printers: {}, pp: {}, movements: [], audit: [], files: {}, gtin: {}, allowedUsers: [],
-  ui: { line: 'all', q: '', rackLine: 'all', lowOnly: false, productQ: '', productFilter: 'all', logKind: 'all', labelKind: 'spools', collapsed: loadCollapsed(), scanMode: 'lookup', recovery: false, tab: 'home', partPrinter: 'all', partCat: 'all', partQ: '', partLowOnly: false, openProduct: null, openSpool: null, openPart: null, logView: 'stock', logActor: 'all', logFrom: '', logTo: '', logQ: '' }
+  ui: { line: 'all', q: '', rackLine: 'all', lowOnly: false, productQ: '', productFilter: 'all', logKind: 'all', labelKind: 'spools', collapsed: loadCollapsed(), scanMode: 'lookup', recovery: false, tab: 'home', partPrinter: 'all', partCat: 'all', partQ: '', partLowOnly: false, openProduct: null, openSpool: null, openPart: null, logView: 'stock', logActor: 'all', logFrom: '', logTo: '', logQ: '', labelFilter: 'all', labelSel: new Set() }
 };
 
 /* ---------------- utils ---------------- */
@@ -384,13 +384,13 @@ function renderProducts(){
     const dots = isPlayset(p) ? playsetDots(p) : recipe(p).map(r => state.spools[r.spool_id]);
     const sub = isPlayset(p) ? 'Playset · ' + c.comps.length + ' product' + (c.comps.length === 1 ? '' : 's') + (p.sku ? ' · ' + esc(p.sku) : '') : esc(p.sku || p.barcode || '') + (c.n > 1 ? ' · ' + c.n + ' per plate' : '');
     const open = state.ui.openProduct === p.id;
-    return '<button class="pcard' + (p.example ? ' ex' : '') + (open ? ' open' : '') + '" data-action="product-open" data-id="' + esc(p.id) + '" aria-expanded="' + open + '">' +
-      '<div class="photo">' + (url ? '<img src="' + esc(url) + '" alt="" loading="lazy">' : '<span class="ph">no photo yet</span>') +
+    return '<div class="pcard' + (p.example ? ' ex' : '') + (open ? ' open' : '') + '" role="button" tabindex="0" data-action="product-open" data-id="' + esc(p.id) + '" aria-expanded="' + open + '">' +
+      '<div class="photo">' + (url ? '<img src="' + esc(url) + '" alt="" loading="lazy">' : '<span class="ph">no photo yet</span>') + '<button class="dots3" data-action="menu" data-kind="product" data-id="' + esc(p.id) + '" aria-label="More">⋯</button>' +
       '<span class="stock' + (st !== 'ok' ? ' low' : '') + '">' + num(p.on_hand) + (st === 'out' ? ' · out' : st === 'low' ? ' · low' : '') + '</span>' +
       (isPlayset(p) ? '<span class="kindtag">Playset</span>' : '') +
       '<span class="dots">' + dots.slice(0, 8).map(sp => dotHTML(sp, true)).join('') + '</span></div>' +
       '<div class="body"><div class="pn">' + esc(p.name || 'Unnamed product') + (p.archived ? ' <span class="badge-ex">archived</span>' : '') + '</div><div class="sku">' + sub + (p.example ? ' · example' : '') + '</div>' +
-      '<div class="nums"><span>cost <b>' + money(c.unit) + '</b></span><span>' + (num(p.price) > 0 ? 'sells <b>' + money(num(p.price)) + '</b>' : 'no price') + '</span>' + (c.margin !== null ? '<span class="m">' + Math.round(c.margin) + '%</span>' : '') + '</div></div></button>' + (open ? productDetailHTML(p) : '');
+      '<div class="nums"><span>cost <b>' + money(c.unit) + '</b></span><span>' + (num(p.price) > 0 ? 'sells <b>' + money(num(p.price)) + '</b>' : 'no price') + '</span>' + (c.margin !== null ? '<span class="m">' + Math.round(c.margin) + '%</span>' : '') + '</div></div></div>' + (open ? productDetailHTML(p) : '');
   }).join('');
   if (!list.length) html = '<div class="empty">' + (state.ui.productFilter === 'archived' ? 'Nothing archived.' : q ? 'No products match that search.' : 'No products yet. Add one, give it a photo and its filaments, and the cost works itself out.') + '</div>';
   $('#productGrid').innerHTML = html; drawCharts($('#productGrid'));
@@ -423,12 +423,12 @@ function renderRack(){
   const spools = all.filter(sp => (state.ui.rackLine === 'all' || sp.line === state.ui.rackLine) && (!state.ui.lowOnly || spoolStatus(sp) !== 'ok'));
   let html = spools.map(sp => {
     const st = spoolStatus(sp); const q = rollsOf(sp); const left = openLeft(sp); const roll = effGrams(sp); const pct = roll > 0 ? Math.max(0, Math.min(100, left / roll * 100)) : 0;
-    return '<button class="shelf-item ' + st + (state.ui.openSpool === sp.id ? ' open' : '') + '" data-action="spool-open" data-id="' + esc(sp.id) + '" title="' + esc(sp.color) + '">' +
+    return '<div class="shelf-item ' + st + (state.ui.openSpool === sp.id ? ' open' : '') + '" role="button" tabindex="0" data-action="spool-open" data-id="' + esc(sp.id) + '" title="' + esc(sp.color) + '"><button class="dots3" data-action="menu" data-kind="spool" data-id="' + esc(sp.id) + '" aria-label="More">⋯</button>' +
       (st !== 'ok' ? '<span class="flag">' + st + '</span>' : '') + (sp.example ? '<span class="ex">example</span>' : '') +
       '<span class="nm">' + esc(sp.color) + '</span><span class="meta">' + esc(sp.line_name || '') + ' · ' + money4(ppg(sp)) + '/g' + (sp.location ? ' · ' + esc(sp.location) : '') + '</span>' +
       '<span class="stock">' + (q === 0 ? 'none on hand' : grams(spoolAvailable(sp)) + ' on hand') + '</span>' +
       '<span class="meter"><i style="width:' + pct.toFixed(0) + '%"></i></span>' +
-      spoolSVG(sp, 72) + (q > 1 ? '<span class="rolls">×' + q + '</span>' : '') + '</button>';
+      spoolSVG(sp, 72) + (q > 1 ? '<span class="rolls">×' + q + '</span>' : '') + '</div>';
   }).join('');
   if (!spools.length) html += '<div class="empty"><span>' + (all.length ? 'Nothing matches that filter.' : 'Nothing on the rack yet. Tap a spool on the color wall to add it with its price and roll size.') + '</span></div>';
   $('#shelves').innerHTML = html;
@@ -529,23 +529,24 @@ function logCSV(){
 
 /* ---------------- render: reorder ---------------- */
 function reorderRows(){
-  const spools = sortSpools(Object.values(state.spools)).filter(sp => spoolStatus(sp) !== 'ok').map(sp => ({ kind: 'spool', sp, status: spoolStatus(sp), avail: spoolAvailable(sp), at: reorderPoint(sp), cost: effCost(sp) }));
-  const products = sortProducts(Object.values(state.products).filter(p => !p.archived && productStatus(p) !== 'ok')).map(p => ({ kind: 'product', p, status: productStatus(p), have: num(p.on_hand), at: productMin(p), need: Math.max(0, productMin(p) - num(p.on_hand)), cost: productCost(p).unit }));
-  const parts = sortParts(Object.values(state.parts).filter(pt => !pt.archived && partStatus(pt) !== 'ok')).map(pt => ({ kind: 'part', pt, status: partStatus(pt), have: num(pt.on_hand), at: partMin(pt), need: Math.max(0, partMin(pt) - num(pt.on_hand)), cost: num(pt.cost) }));
+  const upTo = (x, min) => (x.max_level !== null && x.max_level !== undefined && num(x.max_level) > min) ? num(x.max_level) : min;
+  const spools = sortSpools(Object.values(state.spools)).filter(sp => spoolStatus(sp) !== 'ok').map(sp => ({ kind: 'spool', sp, status: spoolStatus(sp), avail: spoolAvailable(sp), at: reorderPoint(sp), buy: Math.max(1, (sp.max_level ? Math.round(num(sp.max_level)) : 1) - (sp.max_level ? rollsOf(sp) : 0)), cost: effCost(sp) }));
+  const products = sortProducts(Object.values(state.products).filter(p => !p.archived && productStatus(p) !== 'ok')).map(p => ({ kind: 'product', p, status: productStatus(p), have: num(p.on_hand), at: productMin(p), need: Math.max(0, upTo(p, productMin(p)) - num(p.on_hand)), cost: productCost(p).unit }));
+  const parts = sortParts(Object.values(state.parts).filter(pt => !pt.archived && partStatus(pt) !== 'ok')).map(pt => ({ kind: 'part', pt, status: partStatus(pt), have: num(pt.on_hand), at: partMin(pt), need: Math.max(0, upTo(pt, partMin(pt)) - num(pt.on_hand)), cost: num(pt.cost) }));
   return { spools, products, parts };
 }
 function renderReorder(){
   const r = reorderRows(); const total = r.spools.length + r.products.length + r.parts.length; const nr = $('#navReorder'); nr.hidden = !total; nr.textContent = total;
   if (!total) { $('#reorderList').innerHTML = '<div class="empty">Every spool is above its reorder point, every product is above its shelf minimum, and no part is running out.</div>'; return; }
   let html = '';
-  if (r.spools.length) html += '<table class="list"><tr><th>Filament to buy</th><th></th><th class="n">On hand</th><th class="n">Reorder below</th><th class="n">One roll</th></tr>' + r.spools.map(x => '<tr><td>' + dotHTML(x.sp) + ' ' + esc(x.sp.color) + '<span class="sub">' + esc(x.sp.line_name || '') + (x.sp.location ? ' · ' + esc(x.sp.location) : '') + '</span></td><td><span class="tag">' + x.status + '</span></td><td class="n">' + grams(x.avail) + '</td><td class="n">' + grams(x.at) + '</td><td class="n">' + money(x.cost) + '</td></tr>').join('') + '<tr class="total"><td colspan="4">' + r.spools.length + ' spool' + (r.spools.length === 1 ? '' : 's') + ', one roll each</td><td class="n">' + money(r.spools.reduce((a, x) => a + x.cost, 0)) + '</td></tr></table>';
+  if (r.spools.length) html += '<table class="list"><tr><th>Filament to buy</th><th></th><th class="n">On hand</th><th class="n">Reorder below</th><th class="n">Buy</th><th class="n">Cost</th></tr>' + r.spools.map(x => '<tr><td>' + dotHTML(x.sp) + ' ' + esc(x.sp.color) + '<span class="sub">' + esc(x.sp.line_name || '') + (x.sp.location ? ' · ' + esc(x.sp.location) : '') + '</span></td><td><span class="tag">' + x.status + '</span></td><td class="n">' + grams(x.avail) + '</td><td class="n">' + grams(x.at) + '</td><td class="n">' + x.buy + ' roll' + (x.buy === 1 ? '' : 's') + '</td><td class="n">' + money(x.buy * x.cost) + '</td></tr>').join('') + '<tr class="total"><td colspan="5">' + r.spools.reduce((a, x) => a + x.buy, 0) + ' roll' + (r.spools.reduce((a, x) => a + x.buy, 0) === 1 ? '' : 's') + ' across ' + r.spools.length + ' color' + (r.spools.length === 1 ? '' : 's') + '</td><td class="n">' + money(r.spools.reduce((a, x) => a + x.buy * x.cost, 0)) + '</td></tr></table>';
   if (r.products.length) html += '<table class="list" style="margin-top:18px"><tr><th>Products to make</th><th></th><th class="n">On shelf</th><th class="n">Minimum</th><th class="n">To make</th><th class="n">Filament cost</th></tr>' + r.products.map(x => '<tr><td>' + esc(x.p.name) + '<span class="sub">' + esc(x.p.sku || '') + '</span></td><td><span class="tag">' + x.status + '</span></td><td class="n">' + x.have + '</td><td class="n">' + x.at + '</td><td class="n">' + x.need + '</td><td class="n">' + money(x.need * x.cost) + '</td></tr>').join('') + '</table>';
   if (r.parts.length) html += '<table class="list" style="margin-top:18px"><tr><th>Parts to buy</th><th></th><th class="n">On hand</th><th class="n">Reorder below</th><th class="n">To buy</th><th class="n">Cost</th></tr>' + r.parts.map(x => '<tr><td>' + esc(x.pt.name) + '<span class="sub">' + esc([x.pt.part_no, x.pt.vendor, fitsText(x.pt)].filter(Boolean).join(' · ')) + '</span></td><td><span class="tag">' + x.status + '</span></td><td class="n">' + x.have + '</td><td class="n">' + x.at + '</td><td class="n">' + x.need + '</td><td class="n">' + money(x.need * x.cost) + '</td></tr>').join('') + '</table>';
   $('#reorderList').innerHTML = html;
 }
 function reorderText(){
   const r = reorderRows(); const L = ['MOSTLY 3D · REORDER · ' + new Date().toLocaleDateString('en-US')];
-  if (r.spools.length) { L.push('FILAMENT'); r.spools.forEach(x => L.push('  ' + x.sp.color + ' · ' + (x.sp.line_name || '') + '  (' + x.status + ', ' + grams(x.avail) + ' on hand)  ' + money(x.cost) + ' a roll')); }
+  if (r.spools.length) { L.push('FILAMENT'); r.spools.forEach(x => L.push('  ' + x.buy + ' × ' + x.sp.color + ' · ' + (x.sp.line_name || '') + '  (' + x.status + ', ' + grams(x.avail) + ' on hand)  ' + money(x.cost) + ' a roll')); }
   if (r.products.length) { L.push('MAKE'); r.products.forEach(x => L.push('  ' + x.need + ' × ' + x.p.name + '  (' + x.have + ' on shelf, minimum ' + x.at + ')')); }
   if (r.parts.length) { L.push('PARTS'); r.parts.forEach(x => L.push('  ' + x.need + ' × ' + x.pt.name + (x.pt.part_no ? ' (' + x.pt.part_no + ')' : '') + (x.pt.vendor ? ' from ' + x.pt.vendor : '') + '  (' + x.have + ' on hand)')); }
   if (!r.spools.length && !r.products.length && !r.parts.length) L.push('  Nothing to reorder.');
@@ -553,16 +554,35 @@ function reorderText(){
 }
 
 /* ---------------- render: labels ---------------- */
-function renderLabels(){
-  $('#labelChips').innerHTML = ['spools', 'products', 'parts'].map(k => '<button class="chip' + (state.ui.labelKind === k ? ' on' : '') + '" data-action="label-kind" data-k="' + k + '">' + (k === 'spools' ? 'Spools' : k === 'products' ? 'Products' : 'Parts') + '</button>').join('');
-  let items = state.ui.labelKind === 'spools' ? sortSpools(Object.values(state.spools)).map(sp => ({ id: sp.id, code: sp.barcode, name: sp.color, sub: sp.line_name || '' })) : state.ui.labelKind === 'parts' ? sortParts(Object.values(state.parts).filter(pt => !pt.archived)).map(pt => ({ id: pt.id, code: pt.barcode || pt.part_no, name: pt.name, sub: [pt.part_no, fitsText(pt)].filter(Boolean).join(' · ') })) : sortProducts(Object.values(state.products).filter(p => !p.archived)).map(p => ({ id: p.id, code: p.barcode || p.sku, name: p.name, sub: p.sku || '' }));
+function labelItems(){
+  const k = state.ui.labelKind;
+  let items = k === 'spools' ? sortSpools(Object.values(state.spools)).map(sp => ({ id: sp.id, kind: 'spool', code: sp.barcode, name: sp.color, sub: sp.line_name || '', printed: sp.label_printed_at, low: spoolStatus(sp) !== 'ok' }))
+    : k === 'parts' ? sortParts(Object.values(state.parts).filter(pt => !pt.archived)).map(pt => ({ id: pt.id, kind: 'part', code: pt.barcode || pt.part_no, name: pt.name, sub: [pt.part_no, fitsText(pt)].filter(Boolean).join(' · '), printed: pt.label_printed_at, low: partStatus(pt) !== 'ok' }))
+    : sortProducts(Object.values(state.products).filter(p => !p.archived)).map(p => ({ id: p.id, kind: 'product', code: p.barcode || p.sku, name: p.name, sub: p.sku || '', printed: p.label_printed_at, low: productStatus(p) !== 'ok' }));
   items = items.filter(i => i.code);
-  if (!items.length) { $('#labelGrid').innerHTML = '<div class="empty">Nothing to label yet.</div>'; return; }
-  $('#labelGrid').innerHTML = items.map(i => '<div class="label"><div class="ln">' + esc(i.name) + '</div><div class="ls">' + esc(i.sub) + '</div><svg class="bc" data-code="' + esc(i.code) + '"></svg></div>').join('');
+  const f = state.ui.labelFilter; if (f === 'never') items = items.filter(i => !i.printed); if (f === 'low') items = items.filter(i => i.low);
+  return items;
+}
+function renderLabels(){
+  const never = { spools: Object.values(state.spools).filter(x => !x.label_printed_at).length, products: Object.values(state.products).filter(x => !x.archived && !x.label_printed_at).length, parts: Object.values(state.parts).filter(x => !x.archived && !x.label_printed_at).length };
+  $('#labelChips').innerHTML = ['spools', 'products', 'parts'].map(k => '<button class="chip' + (state.ui.labelKind === k ? ' on' : '') + '" data-action="label-kind" data-k="' + k + '">' + (k === 'spools' ? 'Spools' : k === 'products' ? 'Products' : 'Parts') + (never[k] ? ' <span class="n" style="display:inline-block;min-width:16px;height:16px;line-height:16px;text-align:center;border-radius:999px;background:var(--red);color:#fff;font-size:10px;font-weight:600;margin-left:4px;padding:0 4px">' + never[k] + '</span>' : '') + '</button>').join('') +
+    '<span style="width:8px"></span>' + [['all', 'All'], ['never', 'Never printed'], ['low', 'Low stock']].map(([k, l]) => '<button class="chip' + (state.ui.labelFilter === k ? ' on' : '') + (k === 'never' ? ' red' : '') + '" data-action="label-filter" data-k="' + k + '">' + l + '</button>').join('');
+  const items = labelItems(); const sel = state.ui.labelSel;
+  const n = items.filter(i => sel.has(i.id)).length; const btn = $('#btnPrintLabels'); btn.textContent = n ? 'Print selected (' + n + ')' : 'Print selected'; btn.disabled = !n;
+  if (!items.length) { $('#labelGrid').innerHTML = '<div class="empty">' + (state.ui.labelFilter === 'never' ? 'Everything here has been printed already.' : 'Nothing to label yet.') + '</div>'; return; }
+  $('#labelGrid').innerHTML = items.map(i => '<div class="label' + (sel.has(i.id) ? ' sel' : '') + (i.printed ? '' : ' never') + '"><input class="pick" type="checkbox" data-label-pick="' + esc(i.id) + '"' + (sel.has(i.id) ? ' checked' : '') + ' aria-label="Print ' + esc(i.name) + '"><span class="printed">' + (i.printed ? 'printed ' + esc(dateShort(i.printed)) : 'never printed') + '</span><div class="ln">' + esc(i.name) + '</div><div class="ls">' + esc(i.sub) + '</div><svg class="bc" data-code="' + esc(i.code) + '"></svg></div>').join('');
   if (window.JsBarcode) document.querySelectorAll('#labelGrid svg.bc').forEach(el => { try { window.JsBarcode(el, el.dataset.code, { format: 'CODE128', width: 1.6, height: 44, fontSize: 12, margin: 4, displayValue: true }); } catch (e) {} });
   else $('#labelGrid').insertAdjacentHTML('afterbegin', '<p class="fine" style="grid-column:1/-1">Barcode drawing is still loading; reload if the bars do not appear.</p>');
 }
-
+async function markLabelsPrinted(items){
+  const ts = new Date().toISOString(); const byKind = { spool: 'spools', product: 'products', part: 'parts' };
+  for (const kind of Object.keys(byKind)) {
+    const ids = items.filter(i => i.kind === kind).map(i => i.id); if (!ids.length) continue;
+    const t = byKind[kind]; await dbWrite(() => sb.from(t).update({ label_printed_at: ts }).in('id', ids), 'Could not record the printing');
+    const store = kind === 'spool' ? state.spools : kind === 'product' ? state.products : state.parts; ids.forEach(id => { if (store[id]) store[id].label_printed_at = ts; });
+  }
+  logChange('labels_printed', 'labels', null, items.length + ' label' + (items.length === 1 ? '' : 's') + ' printed', { items: items.map(i => i.name) });
+}
 
 /* ---------------- render: home ---------------- */
 const TABS = { home: ['home', 'reorder'], products: ['products'], filament: ['rack', 'wall'], parts: ['parts'], log: ['log'], labels: ['labels'], settings: ['settings'] };
@@ -596,7 +616,7 @@ function renderHome(){
     tile('log', monthName, money(revenue), sold + ' sold · ' + made + ' made · ' + money(revenue - cogs) + ' gross profit', 'accent');
   const r = reorderRows(); const rows = [];
   r.products.forEach(x => rows.push('<div class="attn"><span class="tag">' + x.status + '</span><span class="what">' + esc(x.p.name) + '<span class="sub">' + x.have + ' on the shelf, minimum ' + x.at + ' · make ' + x.need + '</span></span><button class="btn ghost small" data-action="product-open" data-id="' + esc(x.p.id) + '">Open</button></div>'));
-  r.spools.forEach(x => rows.push('<div class="attn"><span class="tag">' + x.status + '</span><span class="what">' + dotHTML(x.sp, true) + ' ' + esc(x.sp.color) + ' <span class="sub">' + esc(x.sp.line_name || '') + ' · ' + grams(x.avail) + ' left, reorder below ' + grams(x.at) + ' · ' + money(x.cost) + ' a roll</span></span><button class="btn ghost small" data-action="spool-open" data-id="' + esc(x.sp.id) + '">Open</button></div>'));
+  r.spools.forEach(x => rows.push('<div class="attn"><span class="tag">' + x.status + '</span><span class="what">' + dotHTML(x.sp, true) + ' ' + esc(x.sp.color) + ' <span class="sub">' + esc(x.sp.line_name || '') + ' · ' + grams(x.avail) + ' left, reorder below ' + grams(x.at) + ' · buy ' + x.buy + ' at ' + money(x.cost) + '</span></span><button class="btn ghost small" data-action="spool-open" data-id="' + esc(x.sp.id) + '">Open</button></div>'));
   r.parts.forEach(x => rows.push('<div class="attn"><span class="tag">' + x.status + '</span><span class="what">' + esc(x.pt.name) + '<span class="sub">' + x.have + ' on hand, reorder below ' + x.at + (x.pt.vendor ? ' · ' + esc(x.pt.vendor) : '') + '</span></span><button class="btn ghost small" data-action="part-open" data-id="' + esc(x.pt.id) + '">Open</button></div>'));
   $('#homeAttention').innerHTML = (rows.length ? rows.slice(0, 8).join('') : '<div class="attn"><span class="what" style="color:var(--ink-3)">Everything is stocked.</span></div>') + (rows.length > 8 ? '<button class="more" data-action="go" data-tab="home" data-anchor="reorder">All ' + rows.length + ' on the reorder list</button>' : rows.length ? '<button class="more" data-action="go" data-tab="home" data-anchor="reorder">Full reorder list</button>' : '');
   const recent = state.movements.slice(0, 8).map(m => { const t = movementTarget(m); const name = t ? (t.name || t.color) : '(removed)'; const q = m.kind === 'sold' || m.kind === 'consume' ? '−' + num(m.qty) : m.kind === 'adjust' ? (num(m.qty) > 0 ? '+' : '') + num(m.qty) : '+' + num(m.qty); return '<div class="attn"><span class="tag ' + (m.kind === 'sold' ? '' : 'ok') + '">' + (KIND_LABEL[m.kind] || m.kind) + '</span><span class="what">' + esc(name) + '<span class="sub">' + esc(dateShort(m.created_at)) + ' ' + esc(timeShort(m.created_at)) + (m.actor ? ' · ' + esc(String(m.actor).split('@')[0]) : '') + '</span></span><b style="font-variant-numeric:tabular-nums">' + q + '</b></div>'; });
@@ -641,7 +661,7 @@ function renderParts(){
       '<div class="cat">' + (pt.category ? '<span class="pbadge">' + esc(pt.category) + '</span>' : '') + '</div>' +
       '<div class="qty"><button class="iconbtn" data-action="part-minus" data-id="' + esc(pt.id) + '" aria-label="Used one">−</button><b>' + num(pt.on_hand) + '</b><button class="iconbtn" data-action="part-plus" data-id="' + esc(pt.id) + '" aria-label="Received one">+</button></div>' +
       '<div class="cost">' + (num(pt.cost) ? '<b>' + money(num(pt.cost)) + '</b>each' : '<b>—</b>no cost') + '</div>' +
-      '<button class="iconbtn" data-action="part-edit" data-id="' + esc(pt.id) + '" aria-label="Edit">✎</button></div>' + (open ? partDetailHTML(pt) : '');
+      '<button class="iconbtn" data-action="menu" data-kind="part" data-id="' + esc(pt.id) + '" aria-label="More">⋯</button></div>' + (open ? partDetailHTML(pt) : '');
   }).join('') : '<div class="empty">' + (all.length ? 'No parts match.' : 'No parts yet. Add a nozzle, a hotend, a build plate, and tie each one to the printers it fits. Scanning an unknown barcode in Receive mode can create a part on the spot.') + '</div>';
   drawCharts($('#partList'));
 }
@@ -650,7 +670,7 @@ function renderParts(){
 let partDraft = null;
 function openPartModal(id, prefill){
   const pt = id ? state.parts[id] : null;
-  partDraft = pt ? Object.assign({}, pt) : Object.assign({ name: '', part_no: '', barcode: '', category: '', cost: 0, vendor: '', link: '', location: '', on_hand: 0, reorder_at: null, photo_path: null, notes: '', archived: false }, prefill || {});
+  partDraft = pt ? Object.assign({}, pt) : Object.assign({ name: '', part_no: '', barcode: '', category: '', cost: 0, vendor: '', link: '', location: '', on_hand: 0, reorder_at: null, max_level: null, photo_path: null, notes: '', archived: false }, prefill || {});
   partDraft._printers = pt ? (state.pp[pt.id] || []).slice() : []; partDraft._photoFile = null; partDraft._photoPreview = photoUrl(pt);
   renderPartModal();
 }
@@ -664,7 +684,7 @@ function renderPartModal(keepFocus){
       '<div class="fields" style="margin-top:12px">' + fld('a_name', 'Name', 'text', p.name || '', { wide: true, placeholder: '0.4 mm hardened steel nozzle' }) + fld('a_partno', 'Part number', 'text', p.part_no || '', { placeholder: 'Vendor or Bambu part no.' }) +
       '<div class="field"><label for="a_cat">Type</label><input id="a_cat" list="partCats" value="' + esc(p.category || '') + '" placeholder="Nozzle, belt, tool…"><datalist id="partCats">' + PART_CATS.map(c => '<option value="' + esc(c) + '">').join('') + '</datalist></div>' +
       fld('a_cost', 'Cost each ($)', 'number', v('cost')) + fld('a_vendor', 'Vendor', 'text', p.vendor || '', { placeholder: 'Bambu store, Amazon…' }) + fld('a_link', 'Reorder link', 'text', p.link || '', { wide: true, placeholder: 'https://' }) +
-      fld('a_loc', 'Location', 'text', p.location || '', { placeholder: 'Drawer, bin' }) + fld('a_reorder', 'Reorder below', 'number', (p.reorder_at !== null && p.reorder_at !== undefined) ? p.reorder_at : '', { placeholder: 'default ' + num(state.settings.partReorderAt) }) +
+      fld('a_loc', 'Location', 'text', p.location || '', { placeholder: 'Drawer, bin' }) + fld('a_reorder', 'Reorder below', 'number', (p.reorder_at !== null && p.reorder_at !== undefined) ? p.reorder_at : '', { placeholder: 'default ' + num(state.settings.partReorderAt) }) + fld('a_max', 'Stock up to', 'number', (p.max_level !== null && p.max_level !== undefined) ? p.max_level : '', { placeholder: 'optional' }) +
       (p.id ? '' : fld('a_onhand', 'On hand now', 'number', v('on_hand'))) + fld('a_barcode', 'Label code', 'text', p.barcode || '', { placeholder: 'made for you if blank', hint: 'Or scan the package barcode here to use it instead' }) +
       '<div class="field wide"><label for="a_notes">Notes</label><textarea id="a_notes" placeholder="Torque, which side, when to replace">' + esc(p.notes || '') + '</textarea></div></div>' +
     '</div><div>' +
@@ -680,7 +700,7 @@ function readPartForm(){
   const p = partDraft;
   p.name = $('#a_name').value.trim(); p.part_no = $('#a_partno').value.trim() || null; p.category = $('#a_cat').value.trim() || null; p.cost = num($('#a_cost').value);
   p.vendor = $('#a_vendor').value.trim() || null; p.link = $('#a_link').value.trim() || null; p.location = $('#a_loc').value.trim() || null;
-  p.reorder_at = $('#a_reorder').value === '' ? null : num($('#a_reorder').value); p.barcode = $('#a_barcode').value.trim() || null; p.notes = $('#a_notes').value.trim() || null;
+  p.reorder_at = $('#a_reorder').value === '' ? null : num($('#a_reorder').value); p.max_level = $('#a_max').value === '' ? null : num($('#a_max').value); p.barcode = $('#a_barcode').value.trim() || null; p.notes = $('#a_notes').value.trim() || null;
   const oh = $('#a_onhand'); if (oh) p.on_hand = num(oh.value);
   p._printers = Array.from(document.querySelectorAll('#modal input[data-printer]:checked')).map(el => el.dataset.printer);
 }
@@ -697,6 +717,38 @@ async function savePartFromModal(){
     closeModal(); toast(isNew ? saved.name + ' added' : 'Saved'); renderAll();
   } catch (e) {}
 }
+function openLevelsModal(kind, id){
+  const item = kind === 'product' ? state.products[id] : kind === 'spool' ? state.spools[id] : state.parts[id]; if (!item) return;
+  const name = kind === 'spool' ? item.color + ' · ' + (item.line_name || '') : item.name;
+  const defMin = kind === 'product' ? num(state.settings.productReorderAt) : kind === 'spool' ? num(state.settings.reorderAt) : num(state.settings.partReorderAt);
+  const minLabel = kind === 'spool' ? 'Reorder below (g)' : kind === 'product' ? 'Shelf minimum' : 'Reorder below';
+  const maxLabel = kind === 'spool' ? 'Keep up to (rolls)' : kind === 'product' ? 'Shelf maximum' : 'Stock up to';
+  openModal('<div class="mh"><div><h3>Stock levels</h3><div class="sub">' + esc(name) + '</div></div></div>' +
+    '<div class="fields">' + fld('lv_min', minLabel, 'number', (item.reorder_at !== null && item.reorder_at !== undefined) ? item.reorder_at : '', { placeholder: 'default ' + defMin, hint: 'Flagged on Home and the reorder list below this' }) + fld('lv_max', maxLabel, 'number', (item.max_level !== null && item.max_level !== undefined) ? item.max_level : '', { placeholder: 'optional', hint: 'The reorder list tops up to this' }) + '</div>' +
+    '<div class="acts"><span class="r"><button class="btn ghost" data-action="modal-close">Cancel</button><button class="btn" data-action="levels-save" data-kind="' + kind + '" data-id="' + esc(id) + '">Save</button></span></div>');
+}
+let menuEl = null;
+function closeMenu(){ if (menuEl) { menuEl.remove(); menuEl = null; } }
+function openMenu(anchor, kind, id){
+  closeMenu();
+  const item = kind === 'product' ? state.products[id] : kind === 'spool' ? state.spools[id] : state.parts[id]; if (!item) return;
+  const items = [
+    ['Open details', (kind === 'product' ? 'product-open' : kind === 'spool' ? 'spool-open' : 'part-open')],
+    ['Edit', (kind === 'product' ? 'product-edit' : kind === 'spool' ? 'spool-edit' : 'part-edit')],
+    ['Adjust count…', 'adjust-open'],
+    ['Stock levels (min / max)…', 'levels-open'],
+    ['Print this label', 'label-one'],
+    '-',
+    [kind === 'spool' ? 'Take off the rack' : (item.archived ? 'Unarchive' : 'Archive'), kind === 'spool' ? 'spool-remove-direct' : 'archive-toggle', kind === 'spool' ? 'danger' : '']
+  ];
+  menuEl = document.createElement('div'); menuEl.className = 'menu'; menuEl.setAttribute('role', 'menu');
+  menuEl.innerHTML = items.map(it => it === '-' ? '<hr>' : '<button type="button" role="menuitem" class="' + (it[2] || '') + '" data-action="' + it[1] + '" data-kind="' + kind + '" data-id="' + esc(id) + '">' + esc(it[0]) + '</button>').join('');
+  document.body.appendChild(menuEl);
+  const r = anchor.getBoundingClientRect(); const w = menuEl.offsetWidth;
+  menuEl.style.top = (window.scrollY + r.bottom + 6) + 'px'; menuEl.style.left = Math.max(8, Math.min(window.innerWidth - w - 8, window.scrollX + r.right - w)) + 'px';
+}
+document.addEventListener('click', e => { if (menuEl && !e.target.closest('.menu') && !e.target.closest('.dots3')) closeMenu(); }, true);
+document.addEventListener('keydown', e => { if (e.key === 'Escape') closeMenu(); if ((e.key === 'Enter' || e.key === ' ') && e.target.getAttribute && e.target.getAttribute('role') === 'button' && e.target.dataset.action && e.target.tagName !== 'BUTTON' && e.target.tagName !== 'INPUT') { e.preventDefault(); e.target.click(); } });
 const REASONS = ['Miscount', 'Damaged or failed', 'Gift or sample', 'Returned', 'Lost', 'Used in-house', 'Opening count', 'Other'];
 function openAdjustModal(kind, id){
   const item = kind === 'product' ? state.products[id] : kind === 'spool' ? state.spools[id] : state.parts[id]; if (!item) return;
@@ -913,6 +965,7 @@ function openEditModal(id){
       fld('m_left', 'Left on the open roll (g)', 'number', rollsOf(sp) ? openLeft(sp) : 0, { hint: 'Weigh it, or use the printer\'s estimate' }) +
       fld('m_cost', 'Roll cost ($)', 'number', effCost(sp)) + fld('m_grams', 'Roll size (g)', 'number', effGrams(sp)) +
       fld('m_reorder', 'Reorder below (g)', 'number', (sp.reorder_at !== undefined && sp.reorder_at !== null) ? sp.reorder_at : '', { placeholder: 'default ' + num(state.settings.reorderAt) }) +
+      fld('m_max', 'Keep up to (rolls)', 'number', (sp.max_level !== undefined && sp.max_level !== null) ? sp.max_level : '', { placeholder: 'optional', hint: 'Reorder list buys up to this' }) +
       fld('m_loc', 'Location', 'text', sp.location || '', { placeholder: 'Shelf, bin, dry box' }) +
       fld('m_notes', 'Notes', 'text', sp.notes || '', { wide: true, placeholder: 'Batch, supplier, quirks' }) +
     '</div>' + note +
@@ -934,7 +987,7 @@ function spoolOptions(selectedId){
 let draft = null;
 function openProductModal(id, kind){
   const p = id ? state.products[id] : null;
-  draft = p ? Object.assign({}, p) : { kind: kind || 'item', name: '', sku: '', barcode: '', description: '', photo_path: null, on_hand: 0, price: null, plate_qty: 1, plate_hours: 0, hours_per_unit: 0, flush_g: 0, tower_g: 0, finishing_min: 0, packaging: 0, reorder_at: null, notes: '', archived: false };
+  draft = p ? Object.assign({}, p) : { kind: kind || 'item', name: '', sku: '', barcode: '', description: '', photo_path: null, on_hand: 0, price: null, plate_qty: 1, plate_hours: 0, hours_per_unit: 0, flush_g: 0, tower_g: 0, finishing_min: 0, packaging: 0, reorder_at: null, max_level: null, notes: '', archived: false };
   if (!draft.kind) draft.kind = 'item';
   draft._rec = p ? recipe(p).map(r => ({ spool_id: r.spool_id, grams: num(r.grams), purge_g: num(r.purge_g), tower_g: num(r.tower_g) })) : [{ spool_id: '', grams: 0, purge_g: 0, tower_g: 0 }];
   draft._comps = p ? components(p).map(c => ({ component_id: c.component_id, qty: num(c.qty) || 1 })) : [{ component_id: '', qty: 1 }];
@@ -1001,7 +1054,7 @@ function renderProductModal(keepFocus){
       '<div class="photo-acts"><input type="file" id="pPhotoFile" accept="image/*" hidden><button class="btn ghost small" data-action="photo-pick">' + (p._photoPreview ? 'Change photo' : 'Add photo') + '</button>' + (p._photoPreview ? '<button class="btn ghost small" data-action="photo-clear">Remove</button>' : '') + '</div>' +
       '<div class="fields" style="margin-top:12px">' + fld('p_name', 'Name', 'text', p.name || '', { wide: true, placeholder: playset ? 'Dragon and egg playset' : 'What it is called on the shelf' }) + fld('p_sku', 'SKU', 'text', p.sku || '', { placeholder: playset ? 'SET-DRAGON' : 'PP-MINI' }) + fld('p_price', 'Sell price ($)', 'number', v('price')) +
       '<div class="field wide"><label for="p_desc">Description</label><textarea id="p_desc" placeholder="Variants, size, notes for the booth">' + esc(p.description || '') + '</textarea></div>' +
-      fld('p_min', 'Shelf minimum', 'number', (p.reorder_at !== null && p.reorder_at !== undefined) ? p.reorder_at : '', { placeholder: 'default ' + num(state.settings.productReorderAt) }) + fld('p_barcode', 'Label code', 'text', p.barcode || '', { placeholder: 'made for you if blank', hint: 'Scan a boxed product\'s own barcode here to use it instead' }) + '</div>' +
+      fld('p_min', 'Shelf minimum', 'number', (p.reorder_at !== null && p.reorder_at !== undefined) ? p.reorder_at : '', { placeholder: 'default ' + num(state.settings.productReorderAt), hint: 'Flagged below this' }) + fld('p_max', 'Shelf maximum', 'number', (p.max_level !== null && p.max_level !== undefined) ? p.max_level : '', { placeholder: 'optional', hint: 'Reorder list makes up to this' }) + fld('p_barcode', 'Label code', 'text', p.barcode || '', { wide: true, placeholder: 'made for you if blank', hint: 'Scan a boxed product\'s own barcode here to use it instead' }) + '</div>' +
     '</div><div>' + right +
       '<div class="costbox" id="costbox">' + costboxHTML(c) + '</div>' +
       (p.id ? '<div class="stockline"><span class="onhand' + (st !== 'ok' ? ' low' : '') + '" id="pOnHand">' + num(p.on_hand) + '</span><span style="font-size:12.5px;color:var(--ink-2)">on the shelf</span><span style="flex:1"></span><input id="pN" type="number" inputmode="numeric" min="1" step="1" value="' + (playset ? 1 : plateQty(p)) + '" aria-label="How many"><button class="btn small" data-action="product-make">' + (playset ? 'Assembled' : 'Made') + '</button><button class="btn red small" data-action="product-sell">Sold</button><button class="btn ghost small" data-action="adjust-open" data-kind="product" data-id="' + esc(p.id) + '">Adjust…</button></div><div id="pConfirm"></div>' : '') +
@@ -1047,7 +1100,7 @@ function refreshCostbox(){
 }
 function readProductForm(){
   draft.name = $('#p_name').value.trim(); draft.sku = $('#p_sku').value.trim() || null; draft.price = $('#p_price').value === '' ? null : num($('#p_price').value);
-  draft.description = $('#p_desc').value.trim(); draft.reorder_at = $('#p_min').value === '' ? null : Math.round(num($('#p_min').value)); draft.barcode = $('#p_barcode').value.trim() || null;
+  draft.description = $('#p_desc').value.trim(); draft.reorder_at = $('#p_min').value === '' ? null : Math.round(num($('#p_min').value)); draft.max_level = $('#p_max').value === '' ? null : Math.round(num($('#p_max').value)); draft.barcode = $('#p_barcode').value.trim() || null;
   draft.finishing_min = num($('#p_fin').value); draft.packaging = num($('#p_pack').value);
   const pq = $('#p_plate_qty'); draft.plate_qty = draft._mode === 'plate' && pq ? Math.max(1, Math.round(num(pq.value)) || 1) : 1;
   const ph = $('#p_plate_hours'); if (ph) draft.plate_hours = num(ph.value);
@@ -1189,6 +1242,12 @@ document.addEventListener('click', async e => {
     else if (a === 'part-use') { if (n <= 0) return; const had = num(pt.on_hand); await usePart(pt, n); toast('Used ' + n + (had < n ? ' (only ' + had + ' were on hand)' : ''), had < n); }
     $('#aOnHand').textContent = num(pt.on_hand); partDraft.on_hand = pt.on_hand; renderParts(); renderHome(); renderReorder(); renderLog(); return;
   }
+  if (a === 'menu') { e.stopPropagation(); openMenu(el, el.dataset.kind, el.dataset.id); return; }
+  if (el.closest('.menu')) closeMenu();
+  if (a === 'levels-open') { openLevelsModal(el.dataset.kind, el.dataset.id); return; }
+  if (a === 'levels-save') { const kind = el.dataset.kind; const mn = $('#lv_min').value.trim(), mx = $('#lv_max').value.trim(); const patch = { reorder_at: mn === '' ? null : num(mn), max_level: mx === '' ? null : num(mx) }; if (kind === 'product') await saveProduct(Object.assign({}, state.products[id], patch)); else if (kind === 'spool') await saveSpool(Object.assign({}, state.spools[id], patch)); else await savePart(Object.assign({}, state.parts[id], patch)); closeModal(); toast('Levels saved'); renderAll(); return; }
+  if (a === 'archive-toggle') { const kind = el.dataset.kind; if (kind === 'product') { const p = state.products[id]; await saveProduct(Object.assign({}, p, { archived: !p.archived })); toast(p.archived ? 'Archived' : 'Unarchived'); } else { const pt = state.parts[id]; await savePart(Object.assign({}, pt, { archived: !pt.archived })); toast(pt.archived ? 'Archived' : 'Unarchived'); } renderAll(); return; }
+  if (a === 'spool-remove-direct') { const sp = state.spools[id]; if (!sp) return; await deleteSpool(id); toast(sp.color + ' taken off the rack'); renderAll(); return; }
   if (a === 'adjust-open') { openAdjustModal(el.dataset.kind, el.dataset.id); return; }
   if (a === 'adjust-save') {
     const kind = el.dataset.kind; const reasonEl = document.querySelector('input[name="adjReason"]:checked'); const reason = reasonEl ? reasonEl.value : 'Other'; const note = $('#adj_note').value.trim();
@@ -1208,8 +1267,17 @@ document.addEventListener('click', async e => {
   if (a === 'log-view') { state.ui.logView = el.dataset.k; renderLog(); return; }
   if (a === 'log-clear') { state.ui.logActor = 'all'; state.ui.logFrom = ''; state.ui.logTo = ''; state.ui.logQ = ''; state.ui.logKind = 'all'; state.ui.logEntity = 'all'; renderLog(); return; }
   if (a === 'person-activity') { state.ui.logActor = el.dataset.email; state.ui.logView = el.dataset.view || 'changes'; goTab('log'); renderLog(); return; }
-  if (a === 'label-kind') { state.ui.labelKind = el.dataset.k; renderLabels(); return; }
-  if (a === 'labels-print') { document.querySelectorAll('section.sec').forEach(s => s.classList.toggle('printing', s.id === 'labels')); window.print(); return; }
+  if (a === 'label-kind') { state.ui.labelKind = el.dataset.k; state.ui.labelSel = new Set(); renderLabels(); return; }
+  if (a === 'label-filter') { state.ui.labelFilter = el.dataset.k; renderLabels(); return; }
+  if (a === 'labels-select-all') { labelItems().forEach(i => state.ui.labelSel.add(i.id)); renderLabels(); return; }
+  if (a === 'labels-select-none') { state.ui.labelSel = new Set(); renderLabels(); return; }
+  if (a === 'labels-print') {
+    const items = labelItems().filter(i => state.ui.labelSel.has(i.id)); if (!items.length) { toast('Tick the labels you want first', true); return; }
+    document.querySelectorAll('section.sec').forEach(s => s.classList.toggle('printing', s.id === 'labels'));
+    const after = async () => { window.removeEventListener('afterprint', after); await markLabelsPrinted(items); state.ui.labelSel = new Set(); renderLabels(); toast(items.length + ' label' + (items.length === 1 ? '' : 's') + ' marked printed'); };
+    window.addEventListener('afterprint', after); window.print(); return;
+  }
+  if (a === 'label-one') { state.ui.labelKind = el.dataset.kind === 'spool' ? 'spools' : el.dataset.kind === 'part' ? 'parts' : 'products'; state.ui.labelFilter = 'all'; state.ui.labelSel = new Set([el.dataset.id]); goTab('labels'); renderLabels(); return; }
   if (a === 'scan-mode') { state.ui.scanMode = el.dataset.k; renderScanModes(); return; }
   if (a === 'wall-toggle') { const k = el.dataset.line; if (state.ui.collapsed.has(k)) state.ui.collapsed.delete(k); else state.ui.collapsed.add(k); saveCollapsed(); renderWall(); return; }
   if (a === 'wall-collapse-all') { LINES.forEach(l => state.ui.collapsed.add(l.key)); saveCollapsed(); renderWall(); return; }
@@ -1236,7 +1304,7 @@ document.addEventListener('click', async e => {
     const from = { rolls: rollsOf(sp), open_left: openLeft(sp) };
     sp.custom_price = lp ? (lp.set ? (Math.abs(cost - lp.cost) > 0.004 || Math.abs(g - lp.grams) > 0.5) : false) : true;
     sp.cost = cost; sp.grams = g; sp.rolls = Math.max(0, Math.round(num($('#m_qty').value))); sp.open_left = sp.rolls > 0 ? Math.min(g, Math.max(0, num($('#m_left').value))) : 0;
-    const ro = $('#m_reorder').value.trim(); sp.reorder_at = ro === '' ? null : num(ro); sp.location = $('#m_loc').value.trim() || null; sp.notes = $('#m_notes').value.trim() || null;
+    const ro = $('#m_reorder').value.trim(); sp.reorder_at = ro === '' ? null : num(ro); const mx = $('#m_max').value.trim(); sp.max_level = mx === '' ? null : num(mx); sp.location = $('#m_loc').value.trim() || null; sp.notes = $('#m_notes').value.trim() || null;
     await saveSpool(sp);
     if (sp.rolls > from.rolls) await addMovement({ kind: 'receive', spool_id: sp.id, qty: sp.rolls - from.rolls, grams: (sp.rolls - from.rolls) * g, cost: Math.round((sp.rolls - from.rolls) * effCost(sp) * 100) / 100, note: 'edited on the rack' });
     else if (sp.rolls !== from.rolls || Math.abs(openLeft(sp) - from.open_left) > 0.05) await addMovement({ kind: 'adjust', spool_id: sp.id, qty: sp.rolls - from.rolls, grams: Math.round((spoolAvailable(sp) - ((from.rolls > 0 ? (from.rolls - 1) * g + from.open_left : 0))) * 10) / 10, cost: 0, note: 'edited on the rack', detail: { from, to: { rolls: sp.rolls, open_left: sp.open_left } } });
@@ -1306,6 +1374,7 @@ document.addEventListener('change', async e => {
   const el = e.target;
   if (el.id === 'pPhotoFile') { const f = el.files && el.files[0]; if (!f) return; if (partDraft && $('#a_name')) { partDraft._photoFile = f; partDraft._photoPreview = URL.createObjectURL(f); readPartForm(); renderPartModal(true); return; } draft._photoFile = f; draft._photoPreview = URL.createObjectURL(f); readProductForm(); renderProductModal(true); return; }
   if (el.dataset.printer !== undefined) { el.closest('label').classList.toggle('on', el.checked); return; }
+  if (el.dataset.labelPick !== undefined) { if (el.checked) state.ui.labelSel.add(el.dataset.labelPick); else state.ui.labelSel.delete(el.dataset.labelPick); el.closest('.label').classList.toggle('sel', el.checked); const n = state.ui.labelSel.size; const btn = $('#btnPrintLabels'); btn.textContent = n ? 'Print selected (' + n + ')' : 'Print selected'; btn.disabled = !n; return; }
   if (el.name === 'adjReason') { document.querySelectorAll('input[name="adjReason"]').forEach(r => r.closest('label').classList.toggle('on', r.checked)); return; }
   if (el.id === 'logActor') { state.ui.logActor = el.value; renderLog(); return; }
   if (el.id === 'logFrom' || el.id === 'logTo') { state.ui[el.id] = el.value; renderLog(); return; }

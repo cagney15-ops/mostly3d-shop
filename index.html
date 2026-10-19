@@ -329,7 +329,7 @@ table.breakdown tr.group td{color:var(--ink-2);font-size:11px;letter-spacing:.14
 /* labels + print */
 .labels-tools{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:14px}
 .labels{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:10px}
-.label{border:1px solid var(--line-2);border-radius:6px;padding:8px 10px;background:#fff;color:#000;display:flex;flex-direction:column;align-items:center;gap:2px;page-break-inside:avoid;break-inside:avoid}
+.label{border:1px solid var(--line-2);border-radius:6px;padding:24px 10px 8px;background:#fff;color:#000;display:flex;flex-direction:column;align-items:center;gap:2px;page-break-inside:avoid;break-inside:avoid}
 .label .ln{font-family:var(--font-display);font-size:14px;text-align:center;line-height:1.15}
 .label .ls{font-size:10px;letter-spacing:.12em;text-transform:uppercase;color:#555}
 .label svg{max-width:100%;height:auto}
@@ -440,6 +440,26 @@ table.breakdown tr.group td{color:var(--ink-2);font-size:11px;letter-spacing:.14
 .people .pr .sub{font-size:11.5px;color:var(--ink-3)}
 .people .pr .sp{flex:1}
 .reasons{display:flex;flex-wrap:wrap;gap:6px;margin-top:4px}
+
+.label{position:relative}
+.label .pick{position:absolute;top:6px;left:6px;width:20px;height:20px;accent-color:var(--red);cursor:pointer;margin:0}
+.label.sel{border-color:var(--red);box-shadow:0 0 0 1px var(--red) inset}
+.label .printed{position:absolute;top:6px;right:8px;font-size:9px;letter-spacing:.1em;text-transform:uppercase;color:var(--ink-3)}
+.label.never .printed{color:var(--red)}
+@media print{.labels .label:not(.sel){display:none}.label .pick,.label .printed{display:none}.labels .label.sel{box-shadow:none;border-color:#bbb}}
+/* ⋯ menus */
+.pcard,.shelf-item{position:relative}
+.dots3{position:absolute;top:8px;right:8px;width:28px;height:28px;border-radius:999px;border:1px solid var(--line-2);background:var(--paper);color:var(--ink-2);display:grid;place-items:center;cursor:pointer;font-size:16px;line-height:1;z-index:2;padding:0;font-family:inherit}
+.dots3:hover{border-color:var(--ink);color:var(--ink)}
+.pcard .photo .dots3{top:8px;right:8px}
+.pcard .photo .kindtag{right:44px}
+.shelf-item .dots3{top:6px;left:6px;right:auto;width:24px;height:24px;font-size:14px}
+.menu{position:absolute;z-index:30;background:var(--paper);border:1px solid var(--line-2);border-radius:12px;box-shadow:0 10px 30px rgba(20,16,16,.14);padding:6px;min-width:190px}
+.menu button{display:block;width:100%;text-align:left;background:none;border:0;padding:8px 12px;border-radius:8px;font:inherit;font-size:13.5px;cursor:pointer;color:var(--ink)}
+.menu button:hover{background:var(--panel-2)}
+.menu button.danger{color:var(--red)}
+.menu hr{border:0;border-top:1px solid var(--line);margin:4px 0}
+.pcard[role=button]:focus-visible,.shelf-item[role=button]:focus-visible{outline:2px solid var(--red);outline-offset:2px}
 @media print{
   body{padding:0}
   header.brand,nav.steps,.scanbar,footer,.modal,.toast,.auth,section.sec:not(.printing),.sec-head,.labels-tools,.no-print{display:none!important}
@@ -620,9 +640,9 @@ footer .script{font-size:22px;color:var(--red)}
         <div>
           <p class="eyebrow">Scanning</p>
           <h2>Labels</h2>
-          <p class="lede">Print a barcode for each spool and product. Scanned, a label does whatever the scan bar is set to: receive, make, sell, or look up. Bambu boxes already have a barcode; the first scan of a new one asks which color it is.</p>
+          <p class="lede">Tick the labels you want on the sheet and print. New items show under <em>Never printed</em>, so adding products later does not mean reprinting everything. Scanned, a label does whatever the scan bar is set to.</p>
         </div>
-        <div class="sec-actions"><button class="btn" data-action="labels-print">Print labels</button></div>
+        <div class="sec-actions"><button class="btn ghost" data-action="labels-select-all">Select all shown</button><button class="btn ghost" data-action="labels-select-none">Clear</button><button class="btn" data-action="labels-print" id="btnPrintLabels">Print selected</button></div>
       </div>
       <div class="labels-tools"><div class="chips" id="labelChips"></div></div>
       <div class="labels" id="labelGrid"></div>
