@@ -292,6 +292,29 @@ async function saveComponents(productId, rows){
   const clean = rows.filter(r => r.component_id && r.component_id !== productId).map((r, i) => ({ product_id: productId, component_id: r.component_id, qty: num(r.qty) > 0 ? num(r.qty) : 1, position: i }));
   if (clean.length) { const r = await dbWrite(() => sb.from('product_components').insert(clean).select(), 'Could not save the playset contents'); state.pc[productId] = r.data; } else state.pc[productId] = [];
 }
+const FILE_BUCKET = 'product-files';
+const fmtSize = n => n >= 1048576 ? (n / 1048576).toFixed(1) + ' MB' : n >= 1024 ? Math.round(n / 1024) + ' KB' : n + ' B';
+function fileKind(name){ const n = name.toLowerCase(); return n.endsWith('.gcode.3mf') ? 'gcode.3mf' : n.endsWith('.3mf') ? '3mf' : n.endsWith('.gcode') ? 'gcode' : n.endsWith('.stl') ? 'stl' : n.endsWith('.step') || n.endsWith('.stp') ? 'step' : 'file'; }
+async function uploadProductFile(productId, file){
+  const path = productId + '/' + Date.now() + '-' + file.name.replace(/[^A-Za-z0-9._-]+/g, '_');
+  const up = await sb.storage.from(FILE_BUCKET).upload(path, file, { upsert: false }); if (up.error) { fail(up.error, 'Could not upload ' + file.name); return null; }
+  const r = await dbWrite(() => sb.from('product_files').insert({ product_id: productId, name: file.name, path, size: file.size, kind: fileKind(file.name), created_by: me() }).select().single(), 'Could not record the file');
+  (state.files[productId] = state.files[productId] || []).push(r.data); return r.data;
+}
+async function removeProductFile(f){
+  await dbWrite(() => sb.from('product_files').delete().eq('id', f.id), 'Could not remove the file');
+  try { await sb.storage.from(FILE_BUCKET).remove([f.path]); } catch (e) {}
+  state.files[f.product_id] = (state.files[f.product_id] || []).filter(x => x.id !== f.id);
+}
+async function signedFileUrl(f){ const r = await sb.storage.from(FILE_BUCKET).createSignedUrl(f.path, 3600, { download: f.name }); if (r.error) { fail(r.error, 'Could not open the file'); return null; } return r.data.signedUrl; }
+function filesHTML(productId, editable){
+  const list = (state.files[productId] || []).slice().sort((a, b) => a.name.localeCompare(b.name));
+  if (!list.length && !editable) return '';
+  return '<div class="files">' + list.map(f => '<div class="fr"><span class="pbadge">' + esc(f.kind || 'file') + '</span><span class="fn" title="' + esc(f.name) + '">' + esc(f.name) + '</span><span class="fs">' + fmtSize(num(f.size)) + '</span>' +
+    '<button class="btn ghost small" data-action="file-download" data-id="' + esc(f.id) + '">Download</button>' +
+    (['3mf', 'gcode.3mf', 'stl'].indexOf(f.kind) >= 0 ? '<button class="btn ghost small" data-action="file-slicer" data-id="' + esc(f.id) + '" data-app="bambu">Bambu Studio</button><button class="btn ghost small" data-action="file-slicer" data-id="' + esc(f.id) + '" data-app="orca">Orca</button>' : '') +
+    (editable ? '<button class="iconbtn" data-action="file-remove" data-id="' + esc(f.id) + '" aria-label="Remove file">×</button>' : '') + '</div>').join('') + '</div>';
+}
 async function addMovement(m){
   const row = Object.assign({ actor: state.session && state.session.user ? state.session.user.email : null }, m);
   const r = await dbWrite(() => sb.from('movements').insert(row).select().single(), 'Could not log the movement');
@@ -749,6 +772,31 @@ function openMenu(anchor, kind, id){
 }
 document.addEventListener('click', e => { if (menuEl && !e.target.closest('.menu') && !e.target.closest('.dots3')) closeMenu(); }, true);
 document.addEventListener('keydown', e => { if (e.key === 'Escape') closeMenu(); if ((e.key === 'Enter' || e.key === ' ') && e.target.getAttribute && e.target.getAttribute('role') === 'button' && e.target.dataset.action && e.target.tagName !== 'BUTTON' && e.target.tagName !== 'INPUT') { e.preventDefault(); e.target.click(); } });
+function openSwapModal(){
+  const spools = sortSpools(Object.values(state.spools));
+  const opts = sel => '<option value="">Choose a color</option>' + spools.map(sp => '<option value="' + esc(sp.id) + '"' + (sel === sp.id ? ' selected' : '') + '>' + esc(sp.color) + ' · ' + esc(sp.line_name || '') + '</option>').join('');
+  openModal('<div class="mh"><div><h3>Replace a color</h3><div class="sub">Every product that uses the first color switches to the second; grams stay the same.</div></div></div>' +
+    '<div class="fields">' + '<div class="field"><label for="swapFrom">Replace</label><select id="swapFrom">' + opts('') + '</select></div><div class="field"><label for="swapTo">With</label><select id="swapTo">' + opts('') + '</select></div></div>' +
+    '<div class="swap-preview" id="swapPreview"><p class="note">Pick the color you are retiring.</p></div>' +
+    '<label class="chip" style="display:inline-flex;gap:8px;align-items:center;margin-top:10px"><input type="checkbox" id="swapRemove"> Take the old color off the rack afterwards</label>' +
+    '<div class="acts"><span class="r"><button class="btn ghost" data-action="modal-close">Cancel</button><button class="btn" data-action="swap-apply" id="swapApply" disabled>Replace</button></span></div>');
+}
+function swapPreview(){
+  const from = $('#swapFrom').value, to = $('#swapTo').value; const box = $('#swapPreview'); const btn = $('#swapApply');
+  if (!from) { box.innerHTML = '<p class="note">Pick the color you are retiring.</p>'; btn.disabled = true; return; }
+  const uses = sortProducts(Object.values(state.products).filter(p => recipe(p).some(r => r.spool_id === from)));
+  box.innerHTML = uses.length ? '<p class="note"><b>' + uses.length + '</b> product' + (uses.length === 1 ? '' : 's') + ' use ' + esc(state.spools[from].color) + ':</p><div class="colors">' + uses.map(p => { const g = recipe(p).filter(r => r.spool_id === from).reduce((a, r) => a + num(r.grams) + num(r.purge_g) + num(r.tower_g), 0); return '<div class="cr">' + esc(p.name) + '<b>' + grams(g) + ' / plate</b></div>'; }).join('') + '</div>' : '<p class="note">No product uses that color.</p>';
+  btn.disabled = !(from && to && from !== to && uses.length);
+}
+async function applySwap(from, to, removeOld){
+  const fromSp = state.spools[from], toSp = state.spools[to]; if (!fromSp || !toSp) return;
+  const uses = Object.values(state.products).filter(p => recipe(p).some(r => r.spool_id === from));
+  await dbWrite(() => sb.from('product_filaments').update({ spool_id: to }).eq('spool_id', from), 'Could not replace the color');
+  Object.keys(state.pf).forEach(pid => state.pf[pid].forEach(r => { if (r.spool_id === from) r.spool_id = to; }));
+  await logChange('replaced_color', 'spool', to, fromSp.color + ' → ' + toSp.color, { products: uses.map(p => p.name), from: fromSp.color + ' · ' + (fromSp.line_name || ''), to: toSp.color + ' · ' + (toSp.line_name || '') });
+  if (removeOld) await deleteSpool(from);
+  return uses.length;
+}
 const REASONS = ['Miscount', 'Damaged or failed', 'Gift or sample', 'Returned', 'Lost', 'Used in-house', 'Opening count', 'Other'];
 function openAdjustModal(kind, id){
   const item = kind === 'product' ? state.products[id] : kind === 'spool' ? state.spools[id] : state.parts[id]; if (!item) return;
@@ -871,6 +919,7 @@ function productDetailHTML(p){
     '</div>' +
     '<div class="usage"><h4>' + (c.playset ? 'What goes in it' : 'Colors used') + '</h4></div><div class="colors">' + (colors || '<div class="cr sub">Nothing entered yet</div>') + '</div>' +
     (p.description ? '<p class="note" style="margin-top:10px">' + esc(p.description) + '</p>' : '') +
+    ((state.files[p.id] || []).length ? '<div class="usage" style="margin-top:12px"><h4>Print files</h4></div>' + filesHTML(p.id, false) : '') +
     '<div class="dacts"><input type="number" inputmode="numeric" min="1" step="1" value="' + (c.playset ? 1 : c.n) + '" id="pdN-' + esc(p.id) + '" aria-label="How many"><button class="btn small" data-action="pd-make" data-id="' + esc(p.id) + '">' + (c.playset ? 'Assembled' : 'Made') + '</button><button class="btn red small" data-action="pd-sell" data-id="' + esc(p.id) + '">Sold</button><button class="btn ghost small" data-action="adjust-open" data-kind="product" data-id="' + esc(p.id) + '">Adjust…</button><span class="sp"></span><button class="btn ghost small" data-action="product-edit" data-id="' + esc(p.id) + '">Edit</button><button class="iconbtn close" data-action="product-open" data-id="' + esc(p.id) + '" aria-label="Close">×</button></div>' + provHTML(p) +
     '</div><div class="usage"><h4>Usage</h4><div class="usub">Made and sold per week, last ' + WEEKS + ' weeks</div>' + chartHTML('product:' + p.id, u) +
     '<div class="totals"><span>sold <b>' + u.totals.soldAll + '</b></span><span>made <b>' + u.totals.madeAll + '</b></span><span>sales <b>' + money(u.totals.revenue) + '</b></span>' + (u.totals.lastSold ? '<span>last sold <b>' + esc(dateShort(u.totals.lastSold)) + '</b></span>' : '') + '</div></div></div>';
@@ -992,7 +1041,7 @@ function openProductModal(id, kind){
   draft._rec = p ? recipe(p).map(r => ({ spool_id: r.spool_id, grams: num(r.grams), purge_g: num(r.purge_g), tower_g: num(r.tower_g) })) : [{ spool_id: '', grams: 0, purge_g: 0, tower_g: 0 }];
   draft._comps = p ? components(p).map(c => ({ component_id: c.component_id, qty: num(c.qty) || 1 })) : [{ component_id: '', qty: 1 }];
   draft._mode = plateQty(draft) > 1 ? 'plate' : 'unit';
-  draft._photoFile = null; draft._photoPreview = photoUrl(p);
+  draft._photoFile = null; draft._photoPreview = photoUrl(p); draft._newFiles = [];
   renderProductModal();
 }
 const gIn = (i, field, val, label) => '<span class="g"><input type="number" inputmode="decimal" step="any" min="0" data-rec="' + i + '" data-field="' + field + '" value="' + (num(val) > 0 ? num(val) : '') + '" placeholder="0" aria-label="' + label + '"></span>';
@@ -1057,6 +1106,7 @@ function renderProductModal(keepFocus){
       fld('p_min', 'Shelf minimum', 'number', (p.reorder_at !== null && p.reorder_at !== undefined) ? p.reorder_at : '', { placeholder: 'default ' + num(state.settings.productReorderAt), hint: 'Flagged below this' }) + fld('p_max', 'Shelf maximum', 'number', (p.max_level !== null && p.max_level !== undefined) ? p.max_level : '', { placeholder: 'optional', hint: 'Reorder list makes up to this' }) + fld('p_barcode', 'Label code', 'text', p.barcode || '', { wide: true, placeholder: 'made for you if blank', hint: 'Scan a boxed product\'s own barcode here to use it instead' }) + '</div>' +
     '</div><div>' + right +
       '<div class="costbox" id="costbox">' + costboxHTML(c) + '</div>' +
+      '<div class="field" style="margin-top:14px"><label>Print files</label><small>3MF, G-code or STL. Download them later, or open straight in Bambu Studio or Orca.</small></div>' + (p.id ? filesHTML(p.id, true) : '') + (p._newFiles && p._newFiles.length ? '<div class="files">' + p._newFiles.map((f, i) => '<div class="fr queued"><span class="pbadge">' + esc(fileKind(f.name)) + '</span><span class="fn">' + esc(f.name) + '</span><span class="fs">' + fmtSize(f.size) + ' · uploads on save</span><button class="iconbtn" data-action="file-unqueue" data-i="' + i + '" aria-label="Remove">×</button></div>').join('') + '</div>' : '') + '<div style="margin-top:8px"><input type="file" id="pFiles" accept=".3mf,.gcode,.stl,.step,.stp" multiple hidden><button class="btn ghost small" data-action="files-pick">Add files</button></div>' +
       (p.id ? '<div class="stockline"><span class="onhand' + (st !== 'ok' ? ' low' : '') + '" id="pOnHand">' + num(p.on_hand) + '</span><span style="font-size:12.5px;color:var(--ink-2)">on the shelf</span><span style="flex:1"></span><input id="pN" type="number" inputmode="numeric" min="1" step="1" value="' + (playset ? 1 : plateQty(p)) + '" aria-label="How many"><button class="btn small" data-action="product-make">' + (playset ? 'Assembled' : 'Made') + '</button><button class="btn red small" data-action="product-sell">Sold</button><button class="btn ghost small" data-action="adjust-open" data-kind="product" data-id="' + esc(p.id) + '">Adjust…</button></div><div id="pConfirm"></div>' : '') +
     '</div></div>' +
     '<div class="acts">' + (p.id ? '<span style="display:flex;gap:6px"><button class="btn ghost" data-action="product-archive">' + (p.archived ? 'Unarchive' : 'Archive') + '</button><button class="btn danger" data-action="product-delete">Delete</button></span>' : '<span></span>') + '<span class="r"><button class="btn ghost" data-action="modal-close">Cancel</button><button class="btn" data-action="product-save">' + (p.id ? 'Save' : playset ? 'Add playset' : 'Add product') + '</button></span></div>';
@@ -1115,13 +1165,14 @@ async function resizeImage(file){
 }
 async function saveProductFromModal(){
   readProductForm(); if (!draft.name) { toast('Give it a name', true); $('#p_name').focus(); return; }
-  const isNew = !draft.id; const row = Object.assign({}, draft); delete row._rec; delete row._comps; delete row._mode; delete row._photoFile; delete row._photoPreview;
+  const isNew = !draft.id; const row = Object.assign({}, draft); delete row._rec; delete row._comps; delete row._mode; delete row._photoFile; delete row._photoPreview; delete row._newFiles;
   if (!row.barcode) row.barcode = row.sku || code('P-');
   if (isNew) delete row.id;
   try {
     const saved = await saveProduct(row);
     if (draft._photoFile) { const blob = await resizeImage(draft._photoFile); const path = saved.id + '/' + Date.now() + '.jpg'; const up = await sb.storage.from(CONFIG.photoBucket).upload(path, blob, { contentType: 'image/jpeg', upsert: true }); if (up.error) { fail(up.error, 'Could not upload the photo'); } else { const old = saved.photo_path; saved.photo_path = path; await saveProduct(saved); if (old && old !== path) removePhotos([old]); } }
     else if (draft._photoPreview === '' && saved.photo_path) { const old = saved.photo_path; saved.photo_path = null; await saveProduct(saved); removePhotos([old]); }
+    for (const f of (draft._newFiles || [])) await uploadProductFile(saved.id, f);
     if (draft.kind === 'playset') { await saveComponents(saved.id, draft._comps); if (!isNew) await saveRecipe(saved.id, []); }
     else { await saveRecipe(saved.id, draft._rec); if (!isNew && (state.pc[saved.id] || []).length) await saveComponents(saved.id, []); }
     closeModal(); toast(isNew ? saved.name + ' added' : 'Saved'); renderAll();
@@ -1248,6 +1299,13 @@ document.addEventListener('click', async e => {
   if (a === 'levels-save') { const kind = el.dataset.kind; const mn = $('#lv_min').value.trim(), mx = $('#lv_max').value.trim(); const patch = { reorder_at: mn === '' ? null : num(mn), max_level: mx === '' ? null : num(mx) }; if (kind === 'product') await saveProduct(Object.assign({}, state.products[id], patch)); else if (kind === 'spool') await saveSpool(Object.assign({}, state.spools[id], patch)); else await savePart(Object.assign({}, state.parts[id], patch)); closeModal(); toast('Levels saved'); renderAll(); return; }
   if (a === 'archive-toggle') { const kind = el.dataset.kind; if (kind === 'product') { const p = state.products[id]; await saveProduct(Object.assign({}, p, { archived: !p.archived })); toast(p.archived ? 'Archived' : 'Unarchived'); } else { const pt = state.parts[id]; await savePart(Object.assign({}, pt, { archived: !pt.archived })); toast(pt.archived ? 'Archived' : 'Unarchived'); } renderAll(); return; }
   if (a === 'spool-remove-direct') { const sp = state.spools[id]; if (!sp) return; await deleteSpool(id); toast(sp.color + ' taken off the rack'); renderAll(); return; }
+  if (a === 'files-pick') { $('#pFiles').click(); return; }
+  if (a === 'file-unqueue') { readProductForm(); draft._newFiles.splice(+el.dataset.i, 1); renderProductModal(true); return; }
+  if (a === 'file-remove') { const f = Object.values(state.files).flat().find(x => x.id === id); if (!f) return; await removeProductFile(f); readProductForm(); renderProductModal(true); toast('File removed'); return; }
+  if (a === 'file-download') { const f = Object.values(state.files).flat().find(x => x.id === id); if (!f) return; const url = await signedFileUrl(f); if (url) { const link = document.createElement('a'); link.href = url; link.download = f.name; link.rel = 'noopener'; document.body.appendChild(link); link.click(); link.remove(); } return; }
+  if (a === 'file-slicer') { const f = Object.values(state.files).flat().find(x => x.id === id); if (!f) return; const url = await signedFileUrl(f); if (!url) return; const scheme = el.dataset.app === 'orca' ? 'orcaslicer' : 'bambustudio'; window.location.href = scheme + '://open?file=' + encodeURIComponent(url); toast('Opening in ' + (el.dataset.app === 'orca' ? 'OrcaSlicer' : 'Bambu Studio') + '… if nothing happens, use Download'); return; }
+  if (a === 'swap-open') { openSwapModal(); return; }
+  if (a === 'swap-apply') { const from = $('#swapFrom').value, to = $('#swapTo').value; const n = await applySwap(from, to, $('#swapRemove').checked); closeModal(); toast(n + ' product' + (n === 1 ? '' : 's') + ' switched to ' + state.spools[to].color); renderAll(); return; }
   if (a === 'adjust-open') { openAdjustModal(el.dataset.kind, el.dataset.id); return; }
   if (a === 'adjust-save') {
     const kind = el.dataset.kind; const reasonEl = document.querySelector('input[name="adjReason"]:checked'); const reason = reasonEl ? reasonEl.value : 'Other'; const note = $('#adj_note').value.trim();
@@ -1372,11 +1430,13 @@ document.addEventListener('submit', async e => {
 });
 document.addEventListener('change', async e => {
   const el = e.target;
+  if (el.id === 'pFiles') { const list = Array.from(el.files || []); if (!list.length) return; readProductForm(); if (draft.id) { (async () => { for (const f of list) await uploadProductFile(draft.id, f); renderProductModal(true); toast(list.length + ' file' + (list.length === 1 ? '' : 's') + ' uploaded'); })(); } else { draft._newFiles = (draft._newFiles || []).concat(list); renderProductModal(true); } return; }
   if (el.id === 'pPhotoFile') { const f = el.files && el.files[0]; if (!f) return; if (partDraft && $('#a_name')) { partDraft._photoFile = f; partDraft._photoPreview = URL.createObjectURL(f); readPartForm(); renderPartModal(true); return; } draft._photoFile = f; draft._photoPreview = URL.createObjectURL(f); readProductForm(); renderProductModal(true); return; }
   if (el.dataset.printer !== undefined) { el.closest('label').classList.toggle('on', el.checked); return; }
   if (el.dataset.labelPick !== undefined) { if (el.checked) state.ui.labelSel.add(el.dataset.labelPick); else state.ui.labelSel.delete(el.dataset.labelPick); el.closest('.label').classList.toggle('sel', el.checked); const n = state.ui.labelSel.size; const btn = $('#btnPrintLabels'); btn.textContent = n ? 'Print selected (' + n + ')' : 'Print selected'; btn.disabled = !n; return; }
   if (el.name === 'adjReason') { document.querySelectorAll('input[name="adjReason"]').forEach(r => r.closest('label').classList.toggle('on', r.checked)); return; }
   if (el.id === 'logActor') { state.ui.logActor = el.value; renderLog(); return; }
+  if (el.id === 'swapFrom' || el.id === 'swapTo') { swapPreview(); return; }
   if (el.id === 'logFrom' || el.id === 'logTo') { state.ui[el.id] = el.value; renderLog(); return; }
   if (el.dataset.rec !== undefined && el.dataset.field === 'spool_id') { readProductForm(); draft._rec[+el.dataset.rec].spool_id = el.value; renderProductModal(true); return; }
   if (el.dataset.comp !== undefined && el.dataset.field === 'component_id') { readProductForm(); draft._comps[+el.dataset.comp].component_id = el.value; renderProductModal(true); return; }
