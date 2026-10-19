@@ -12,8 +12,8 @@ function saveCollapsed(){ try { localStorage.setItem(COLLAPSE_KEY, JSON.stringif
 const state = {
   session: null, allowed: null, loaded: false,
   settings: Object.assign({}, DEFAULT_SETTINGS),
-  spools: {}, products: {}, pf: {}, pc: {}, parts: {}, printers: {}, pp: {}, movements: [], gtin: {}, allowedUsers: [],
-  ui: { line: 'all', q: '', rackLine: 'all', lowOnly: false, productQ: '', productFilter: 'all', logKind: 'all', labelKind: 'spools', collapsed: loadCollapsed(), scanMode: 'lookup', recovery: false, tab: 'home', partPrinter: 'all', partCat: 'all', partQ: '', partLowOnly: false, openProduct: null, openSpool: null, openPart: null }
+  spools: {}, products: {}, pf: {}, pc: {}, parts: {}, printers: {}, pp: {}, movements: [], audit: [], files: {}, gtin: {}, allowedUsers: [],
+  ui: { line: 'all', q: '', rackLine: 'all', lowOnly: false, productQ: '', productFilter: 'all', logKind: 'all', labelKind: 'spools', collapsed: loadCollapsed(), scanMode: 'lookup', recovery: false, tab: 'home', partPrinter: 'all', partCat: 'all', partQ: '', partLowOnly: false, openProduct: null, openSpool: null, openPart: null, logView: 'stock', logActor: 'all', logFrom: '', logTo: '', logQ: '' }
 };
 
 /* ---------------- utils ---------------- */
@@ -167,7 +167,7 @@ function photoUrl(p){ if (!p || !p.photo_path) return ''; return sb.storage.from
 /* ---------------- data ---------------- */
 async function loadAll(){
   const startedAt = Date.now();
-  const [s, sp, pr, pf, pc, pa, pi, ppx, mv, gt, au] = await Promise.all([
+  const [s, sp, pr, pf, pc, pa, pi, ppx, mv, gt, au, al, fl] = await Promise.all([
     sb.from('shop_settings').select('data').eq('id', 1).maybeSingle(),
     sb.from('spools').select('*'),
     sb.from('products').select('*'),
@@ -178,9 +178,11 @@ async function loadAll(){
     sb.from('part_printers').select('*'),
     sb.from('movements').select('*').gte('created_at', new Date(Date.now() - 365 * 86400000).toISOString()).order('created_at', { ascending: false }).limit(5000),
     sb.from('gtin_map').select('*'),
-    sb.from('allowed_users').select('*').order('email')
+    sb.from('allowed_users').select('*').order('email'),
+    sb.from('audit_log').select('*').gte('created_at', new Date(Date.now() - 365 * 86400000).toISOString()).order('created_at', { ascending: false }).limit(5000),
+    sb.from('product_files').select('*').order('created_at')
   ]);
-  const firstErr = [s, sp, pr, pf, pc, pa, pi, ppx, mv, gt, au].find(r => r.error);
+  const firstErr = [s, sp, pr, pf, pc, pa, pi, ppx, mv, gt, au, al, fl].find(r => r.error);
   if (firstErr) throw firstErr.error;
   if (lastLocalWrite > startedAt || pendingWrites > 0) { scheduleReload(); return false; } // a write landed meanwhile; this snapshot is stale
   if (!settingsDirty) { state.settings = Object.assign({}, DEFAULT_SETTINGS, (s.data && s.data.data) || {}); if (!state.settings.linePrices) state.settings.linePrices = {}; }
@@ -194,6 +196,8 @@ async function loadAll(){
   state.movements = mv.data || [];
   state.gtin = {}; (gt.data || []).forEach(r => state.gtin[r.gtin] = r.cat_key);
   state.allowedUsers = (au.data || []).map(r => r.email);
+  state.audit = al.data || [];
+  state.files = {}; (fl.data || []).forEach(r => { (state.files[r.product_id] = state.files[r.product_id] || []).push(r); });
   state.loaded = true; return true;
 }
 let reloadTimer = null, lastLocalWrite = 0, pendingWrites = 0, reloading = false;
@@ -209,20 +213,48 @@ async function dbWrite(fn, what){
   catch (e) { fail(e, what); throw e; }
   finally { pendingWrites--; }
 }
-async function saveSpool(sp){
-  const row = Object.assign({}, sp); delete row.created_at; delete row.updated_at;
-  const r = await dbWrite(() => sb.from('spools').upsert(row).select().single(), 'Could not save the spool');
-  state.spools[r.data.id] = r.data; return r.data;
+const me = () => (state.session && state.session.user ? state.session.user.email : null);
+const who = e => e ? String(e).split('@')[0] : 'someone';
+// Fields worth a line in the changes log, per entity.
+const TRACKED = {
+  product: ['name', 'sku', 'barcode', 'price', 'kind', 'plate_qty', 'plate_hours', 'finishing_min', 'packaging', 'reorder_at', 'max_level', 'description', 'archived', 'photo_path'],
+  spool: ['color', 'line_name', 'cost', 'grams', 'custom_price', 'reorder_at', 'max_level', 'location', 'notes', 'barcode'],
+  part: ['name', 'part_no', 'barcode', 'category', 'cost', 'vendor', 'link', 'location', 'reorder_at', 'max_level', 'notes', 'archived', 'photo_path'],
+  printer: ['name', 'model', 'serial', 'notes']
+};
+function diffRows(entity, before, after){
+  const out = {}; (TRACKED[entity] || []).forEach(k => { const a = before ? before[k] : undefined, b = after ? after[k] : undefined; const na = a === undefined || a === null || a === '' ? null : a, nb = b === undefined || b === null || b === '' ? null : b; if (String(na) !== String(nb)) out[k] = [na, nb]; });
+  return out;
 }
-async function deleteSpool(id){ await dbWrite(() => sb.from('spools').delete().eq('id', id), 'Could not remove the spool'); delete state.spools[id]; }
-async function saveProduct(p){
-  const row = Object.assign({}, p); delete row.created_at; delete row.updated_at;
+async function logChange(action, entity, id, name, changes){
+  try {
+    const row = { actor: me(), action, entity, entity_id: id ? String(id) : null, name: name || null, changes: changes || null };
+    const r = await sb.from('audit_log').insert(row).select().single();
+    if (!r.error) state.audit.unshift(r.data);
+  } catch (e) { console.warn('audit', e); }
+}
+function stamp(row, isNew){ if (isNew) row.created_by = row.created_by || me(); row.updated_by = me(); return row; }
+async function saveSpool(sp, opts){
+  opts = opts || {}; const before = sp.id ? state.spools[sp.id] : null; const isNew = !sp.id;
+  const row = stamp(Object.assign({}, sp), isNew); delete row.created_at; delete row.updated_at;
+  const r = await dbWrite(() => sb.from('spools').upsert(row).select().single(), 'Could not save the spool');
+  state.spools[r.data.id] = r.data;
+  if (!opts.silent) { const d = diffRows('spool', before, r.data); if (isNew) logChange('created', 'spool', r.data.id, r.data.color + ' · ' + (r.data.line_name || ''), null); else if (Object.keys(d).length) logChange('updated', 'spool', r.data.id, r.data.color + ' · ' + (r.data.line_name || ''), d); }
+  return r.data;
+}
+async function deleteSpool(id){ const sp = state.spools[id]; await dbWrite(() => sb.from('spools').delete().eq('id', id), 'Could not remove the spool'); delete state.spools[id]; if (sp) logChange('deleted', 'spool', id, sp.color + ' · ' + (sp.line_name || ''), null); }
+async function saveProduct(p, opts){
+  opts = opts || {}; const before = p.id ? state.products[p.id] : null; const isNew = !p.id;
+  const row = stamp(Object.assign({}, p), isNew); delete row.created_at; delete row.updated_at;
   const r = await dbWrite(() => sb.from('products').upsert(row).select().single(), 'Could not save the product');
-  state.products[r.data.id] = r.data; return r.data;
+  state.products[r.data.id] = r.data;
+  if (!opts.silent) { const d = diffRows('product', before, r.data); if (isNew) logChange('created', 'product', r.data.id, r.data.name, null); else if (Object.keys(d).length) logChange('updated', 'product', r.data.id, r.data.name, d); }
+  return r.data;
 }
 async function deleteProduct(id){
   const p = state.products[id];
-  await dbWrite(() => sb.from('products').delete().eq('id', id), 'Could not delete the product'); delete state.products[id]; delete state.pf[id]; delete state.pc[id];
+  await dbWrite(() => sb.from('products').delete().eq('id', id), 'Could not delete the product'); delete state.products[id]; delete state.pf[id]; delete state.pc[id]; delete state.files[id];
+  if (p) logChange('deleted', 'product', id, p.name, null);
   if (p && p.photo_path) removePhotos([p.photo_path]);
 }
 async function removePhotos(paths){ try { await sb.storage.from(CONFIG.photoBucket).remove(paths.filter(Boolean)); } catch (e) { console.warn('photo cleanup', e); } }
@@ -231,12 +263,15 @@ async function saveRecipe(productId, rows){
   const clean = rows.filter(r => r.spool_id || num(r.grams) > 0 || num(r.purge_g) > 0 || num(r.tower_g) > 0).map((r, i) => ({ product_id: productId, spool_id: r.spool_id || null, grams: num(r.grams), purge_g: num(r.purge_g), tower_g: num(r.tower_g), position: i }));
   if (clean.length) { const r = await dbWrite(() => sb.from('product_filaments').insert(clean).select(), 'Could not save the filaments'); state.pf[productId] = r.data; } else state.pf[productId] = [];
 }
-async function savePart(pt){
-  const row = Object.assign({}, pt); delete row.created_at; delete row.updated_at;
+async function savePart(pt, opts){
+  opts = opts || {}; const before = pt.id ? state.parts[pt.id] : null; const isNew = !pt.id;
+  const row = stamp(Object.assign({}, pt), isNew); delete row.created_at; delete row.updated_at;
   const r = await dbWrite(() => sb.from('parts').upsert(row).select().single(), 'Could not save the part');
-  state.parts[r.data.id] = r.data; return r.data;
+  state.parts[r.data.id] = r.data;
+  if (!opts.silent) { const d = diffRows('part', before, r.data); if (isNew) logChange('created', 'part', r.data.id, r.data.name, null); else if (Object.keys(d).length) logChange('updated', 'part', r.data.id, r.data.name, d); }
+  return r.data;
 }
-async function deletePart(id){ const pt = state.parts[id]; await dbWrite(() => sb.from('parts').delete().eq('id', id), 'Could not delete the part'); delete state.parts[id]; delete state.pp[id]; if (pt && pt.photo_path) removePhotos([pt.photo_path]); }
+async function deletePart(id){ const pt = state.parts[id]; await dbWrite(() => sb.from('parts').delete().eq('id', id), 'Could not delete the part'); delete state.parts[id]; delete state.pp[id]; if (pt) logChange('deleted', 'part', id, pt.name, null); if (pt && pt.photo_path) removePhotos([pt.photo_path]); }
 async function savePartPrinters(partId, printerIds){
   await dbWrite(() => sb.from('part_printers').delete().eq('part_id', partId), 'Could not save the printers');
   const rows = printerIds.filter(id => state.printers[id]).map(id => ({ part_id: partId, printer_id: id }));
@@ -244,11 +279,14 @@ async function savePartPrinters(partId, printerIds){
   state.pp[partId] = rows.map(r => r.printer_id);
 }
 async function savePrinter(pr){
+  const before = pr.id ? state.printers[pr.id] : null; const isNew = !pr.id;
   const row = Object.assign({}, pr); delete row.created_at; delete row.updated_at;
   const r = await dbWrite(() => sb.from('printers').upsert(row).select().single(), 'Could not save the printer');
-  state.printers[r.data.id] = r.data; return r.data;
+  state.printers[r.data.id] = r.data;
+  const d = diffRows('printer', before, r.data); if (isNew) logChange('created', 'printer', r.data.id, r.data.name, null); else if (Object.keys(d).length) logChange('updated', 'printer', r.data.id, r.data.name, d);
+  return r.data;
 }
-async function deletePrinter(id){ await dbWrite(() => sb.from('printers').delete().eq('id', id), 'Could not remove the printer'); delete state.printers[id]; Object.keys(state.pp).forEach(k => { state.pp[k] = state.pp[k].filter(x => x !== id); }); }
+async function deletePrinter(id){ const pr = state.printers[id]; await dbWrite(() => sb.from('printers').delete().eq('id', id), 'Could not remove the printer'); delete state.printers[id]; Object.keys(state.pp).forEach(k => { state.pp[k] = state.pp[k].filter(x => x !== id); }); if (pr) logChange('deleted', 'printer', id, pr.name, null); }
 async function saveComponents(productId, rows){
   await dbWrite(() => sb.from('product_components').delete().eq('product_id', productId), 'Could not save the playset contents');
   const clean = rows.filter(r => r.component_id && r.component_id !== productId).map((r, i) => ({ product_id: productId, component_id: r.component_id, qty: num(r.qty) > 0 ? num(r.qty) : 1, position: i }));
@@ -261,46 +299,54 @@ async function addMovement(m){
 }
 async function deleteMovement(id){ await dbWrite(() => sb.from('movements').delete().eq('id', id), 'Could not remove the entry'); state.movements = state.movements.filter(m => m.id !== id); }
 let settingsTimer = null, settingsDirty = false;
-function saveSettingsSoon(){ clearTimeout(settingsTimer); settingsDirty = true; setStatus('saving'); settingsTimer = setTimeout(async () => { try { await dbWrite(() => sb.from('shop_settings').upsert({ id: 1, data: state.settings }), 'Could not save settings'); settingsDirty = false; } catch (e) {} }, 600); }
+let settingsSnapshot = null;
+function saveSettingsSoon(){ if (!settingsSnapshot) settingsSnapshot = JSON.parse(JSON.stringify(state.settings)); clearTimeout(settingsTimer); settingsDirty = true; setStatus('saving'); settingsTimer = setTimeout(async () => { try { await dbWrite(() => sb.from('shop_settings').upsert({ id: 1, data: state.settings }), 'Could not save settings'); settingsDirty = false; const before = settingsSnapshot || {}; settingsSnapshot = null; const ch = {}; const flat = o => { const out = {}; Object.keys(o || {}).forEach(k => { if (k === 'linePrices') Object.keys(o[k] || {}).forEach(l => out['price ' + l] = o[k][l] ? o[k][l].cost + '/' + o[k][l].grams + 'g' : null); else if (typeof o[k] !== 'object') out[k] = o[k]; }); return out; }; const a = flat(before), b = flat(state.settings); Object.keys(Object.assign({}, a, b)).forEach(k => { if (String(a[k]) !== String(b[k])) ch[k] = [a[k] === undefined ? null : a[k], b[k] === undefined ? null : b[k]]; }); if (Object.keys(ch).length) logChange('settings', 'settings', null, 'Shop settings', ch); } catch (e) {} }, 600); }
 
 /* ---------------- stock actions ---------------- */
 async function receiveSpool(sp, n, note){
   n = Math.max(1, Math.round(n)); const had = rollsOf(sp);
   sp.rolls = had + n; if (had === 0) sp.open_left = effGrams(sp);
-  await saveSpool(sp);
+  await saveSpool(sp, { silent: true });
   await addMovement({ kind: 'receive', spool_id: sp.id, qty: n, grams: n * effGrams(sp), cost: Math.round(n * effCost(sp) * 100) / 100, note: note || null });
 }
 async function makeProduct(p, units, note){
   units = Math.max(1, Math.round(units));
   const { c, pulls, parts } = spoolPullFor(p, units); const by = []; const taken = []; const shorts = [];
-  for (const pull of pulls) { const sp = state.spools[pull.spoolId]; if (!sp) continue; const rem = consume(sp, pull.grams); await saveSpool(sp); by.push({ spoolId: sp.id, color: sp.color, lineName: sp.line_name || '', grams: pull.grams, used: Math.round((pull.grams - rem) * 10) / 10 }); if (rem > 0.5) shorts.push(sp.color + ' short ' + grams(rem)); }
-  for (const part of parts) { const cp = state.products[part.productId]; if (!cp) continue; const have = num(cp.on_hand); const take = Math.min(have, part.qty); cp.on_hand = Math.round((have - take) * 100) / 100; await saveProduct(cp); taken.push({ productId: cp.id, name: cp.name, qty: part.qty, taken: take }); if (take < part.qty) shorts.push(cp.name + ' short ' + (Math.round((part.qty - take) * 100) / 100)); }
-  p.on_hand = num(p.on_hand) + units; await saveProduct(p);
+  for (const pull of pulls) { const sp = state.spools[pull.spoolId]; if (!sp) continue; const rem = consume(sp, pull.grams); await saveSpool(sp, { silent: true }); by.push({ spoolId: sp.id, color: sp.color, lineName: sp.line_name || '', grams: pull.grams, used: Math.round((pull.grams - rem) * 10) / 10 }); if (rem > 0.5) shorts.push(sp.color + ' short ' + grams(rem)); }
+  for (const part of parts) { const cp = state.products[part.productId]; if (!cp) continue; const have = num(cp.on_hand); const take = Math.min(have, part.qty); cp.on_hand = Math.round((have - take) * 100) / 100; await saveProduct(cp, { silent: true }); taken.push({ productId: cp.id, name: cp.name, qty: part.qty, taken: take }); if (take < part.qty) shorts.push(cp.name + ' short ' + (Math.round((part.qty - take) * 100) / 100)); }
+  p.on_hand = num(p.on_hand) + units; await saveProduct(p, { silent: true });
   await addMovement({ kind: 'made', product_id: p.id, qty: units, grams: Math.round(c.filamentG * units * 10) / 10, cost: Math.round(c.unit * units * 100) / 100, note: note || null, detail: { by, components: taken, unit: c.unit, hours: Math.round(c.hours * units * 100) / 100, short: shorts.join(', ') || null } });
   return { c, shorts };
 }
 async function receivePart(pt, n, note){
-  n = Math.max(0.01, num(n)); pt.on_hand = Math.round((num(pt.on_hand) + n) * 100) / 100; await savePart(pt);
+  n = Math.max(0.01, num(n)); pt.on_hand = Math.round((num(pt.on_hand) + n) * 100) / 100; await savePart(pt, { silent: true });
   await addMovement({ kind: 'receive', part_id: pt.id, qty: n, grams: 0, cost: Math.round(n * num(pt.cost) * 100) / 100, note: note || null });
 }
 async function usePart(pt, n, note){
-  n = Math.max(0.01, num(n)); const have = num(pt.on_hand); pt.on_hand = Math.round(Math.max(0, have - n) * 100) / 100; await savePart(pt);
+  n = Math.max(0.01, num(n)); const have = num(pt.on_hand); pt.on_hand = Math.round(Math.max(0, have - n) * 100) / 100; await savePart(pt, { silent: true });
   await addMovement({ kind: 'consume', part_id: pt.id, qty: n, grams: 0, cost: Math.round(n * num(pt.cost) * 100) / 100, note: note || null, detail: { taken: Math.min(have, n), short: n > have ? Math.round((n - have) * 100) / 100 : 0 } });
 }
-async function adjustPart(pt, newQty, note){
+async function adjustPart(pt, newQty, note, reason){
   const from = num(pt.on_hand); newQty = Math.max(0, num(newQty)); if (newQty === from) return;
-  pt.on_hand = newQty; await savePart(pt);
-  await addMovement({ kind: 'adjust', part_id: pt.id, qty: newQty - from, grams: 0, cost: 0, note: note || null, detail: { from, to: newQty } });
+  pt.on_hand = newQty; await savePart(pt, { silent: true });
+  await addMovement({ kind: 'adjust', part_id: pt.id, qty: newQty - from, grams: 0, cost: Math.round(Math.abs(newQty - from) * num(pt.cost) * 100) / 100, note: note || null, reason: reason || null, detail: { from, to: newQty } });
 }
 async function sellProduct(p, units, note){
   units = Math.max(1, Math.round(units)); const c = productCost(p);
-  p.on_hand = Math.max(0, num(p.on_hand) - units); await saveProduct(p);
+  p.on_hand = Math.max(0, num(p.on_hand) - units); await saveProduct(p, { silent: true });
   await addMovement({ kind: 'sold', product_id: p.id, qty: units, grams: 0, cost: Math.round(c.unit * units * 100) / 100, note: note || null, detail: { unit: c.unit, price: num(p.price), revenue: Math.round(num(p.price) * units * 100) / 100 } });
 }
-async function adjustProduct(p, newQty, note){
+async function adjustProduct(p, newQty, note, reason){
   const from = num(p.on_hand); newQty = Math.max(0, Math.round(newQty)); if (newQty === from) return;
-  p.on_hand = newQty; await saveProduct(p);
-  await addMovement({ kind: 'adjust', product_id: p.id, qty: newQty - from, grams: 0, cost: 0, note: note || null, detail: { from, to: newQty } });
+  p.on_hand = newQty; await saveProduct(p, { silent: true });
+  await addMovement({ kind: 'adjust', product_id: p.id, qty: newQty - from, grams: 0, cost: Math.round(Math.abs(newQty - from) * productCost(p).unit * 100) / 100, note: note || null, reason: reason || null, detail: { from, to: newQty } });
+}
+async function adjustSpool(sp, rolls, left, note, reason){
+  const from = { rolls: rollsOf(sp), open_left: openLeft(sp) }; const g = effGrams(sp);
+  sp.rolls = Math.max(0, Math.round(num(rolls))); sp.open_left = sp.rolls > 0 ? Math.min(g, Math.max(0, num(left))) : 0;
+  if (sp.rolls === from.rolls && Math.abs(sp.open_left - from.open_left) < 0.05) return;
+  await saveSpool(sp, { silent: true });
+  await addMovement({ kind: 'adjust', spool_id: sp.id, qty: sp.rolls - from.rolls, grams: Math.round((spoolAvailable(sp) - ((from.rolls > 0 ? (from.rolls - 1) * g + from.open_left : 0))) * 10) / 10, cost: 0, note: note || null, reason: reason || null, detail: { from, to: { rolls: sp.rolls, open_left: sp.open_left } } });
 }
 async function undoMovement(m){
   if (m.kind === 'made') { const p = state.products[m.product_id]; ((m.detail && m.detail.by) || []).forEach(b => { const sp = state.spools[b.spoolId]; const g = b.used !== undefined ? num(b.used) : num(b.grams); if (sp && g > 0) restock(sp, g); }); for (const b of ((m.detail && m.detail.by) || [])) { const sp = state.spools[b.spoolId]; if (sp) await saveSpool(sp); } for (const cpart of ((m.detail && m.detail.components) || [])) { const cp = state.products[cpart.productId]; const back = cpart.taken !== undefined ? num(cpart.taken) : num(cpart.qty); if (cp && back > 0) { cp.on_hand = num(cp.on_hand) + back; await saveProduct(cp); } } if (p) { p.on_hand = Math.max(0, num(p.on_hand) - num(m.qty)); await saveProduct(p); } }
@@ -428,9 +474,17 @@ function renderLog(){
     '<div class="tile-num"><span class="tl">Sold</span><span class="tv">' + sold + '</span><span class="ts">units this month</span></div>' +
     '<div class="tile-num accent"><span class="tl">Sales</span><span class="tv">' + money(revenue) + '</span><span class="ts">at list price</span></div>' +
     '<div class="tile-num"><span class="tl">Gross profit</span><span class="tv">' + money(revenue - cogs) + '</span><span class="ts">sales minus cost of goods</span></div>';
+  document.querySelectorAll('#logViews button').forEach(b => b.classList.toggle('on', b.dataset.k === state.ui.logView));
+  // who filter: everyone who shows up anywhere
+  const actors = {}; state.movements.forEach(m => { if (m.actor) actors[m.actor] = true; }); state.audit.forEach(a => { if (a.actor) actors[a.actor] = true; }); state.allowedUsers.forEach(e => actors[e] = true);
+  const sel = $('#logActor'); const cur = state.ui.logActor; sel.innerHTML = '<option value="all">Everyone</option>' + Object.keys(actors).sort().map(e => '<option value="' + esc(e) + '"' + (e === cur ? ' selected' : '') + '>' + esc(who(e)) + '</option>').join(''); if (!actors[cur] && cur !== 'all') state.ui.logActor = 'all';
+  if ($('#logFrom').value !== state.ui.logFrom) $('#logFrom').value = state.ui.logFrom; if ($('#logTo').value !== state.ui.logTo) $('#logTo').value = state.ui.logTo; if ($('#logQ').value !== state.ui.logQ) $('#logQ').value = state.ui.logQ;
+  const inRange = iso => { const t = new Date(iso).getTime(); if (state.ui.logFrom && t < new Date(state.ui.logFrom + 'T00:00:00').getTime()) return false; if (state.ui.logTo && t > new Date(state.ui.logTo + 'T23:59:59').getTime()) return false; return true; };
+  const q = state.ui.logQ.trim().toLowerCase();
+  if (state.ui.logView === 'changes') { renderChanges(inRange, q); return; }
   $('#logChips').innerHTML = ['all', 'made', 'sold', 'receive', 'consume', 'adjust'].map(k => '<button class="chip' + (state.ui.logKind === k ? ' on' : '') + '" data-action="log-kind" data-k="' + k + '">' + (k === 'all' ? 'All' : KIND_LABEL[k]) + '</button>').join('');
-  const list = state.movements.filter(m => state.ui.logKind === 'all' || m.kind === state.ui.logKind);
-  if (!list.length) { $('#logList').innerHTML = '<div class="empty">Nothing here yet. Receive a roll, make something, or sell something and it lands here.</div>'; return; }
+  const list = state.movements.filter(m => (state.ui.logKind === 'all' || m.kind === state.ui.logKind) && (state.ui.logActor === 'all' || m.actor === state.ui.logActor) && inRange(m.created_at) && (!q || movementText(m).indexOf(q) >= 0));
+  if (!list.length) { $('#logList').innerHTML = '<div class="empty">' + (state.movements.length ? 'Nothing matches those filters.' : 'Nothing here yet. Receive a roll, make something, or sell something and it lands here.') + '</div>'; return; }
   $('#logList').innerHTML = '<table class="list"><tr><th>When</th><th>What</th><th class="n">Qty</th><th class="n">Filament</th><th class="n">Cost</th><th></th></tr>' +
     list.map(m => {
       const p = m.product_id ? state.products[m.product_id] : null; const sp = m.spool_id ? state.spools[m.spool_id] : null; const pt = m.part_id ? state.parts[m.part_id] : null;
@@ -440,6 +494,7 @@ function renderLog(){
       if (m.kind === 'sold' && m.detail) sub = (m.detail.revenue ? money(num(m.detail.revenue)) + ' in sales' : 'no price set');
       if (m.kind === 'adjust' && m.detail && m.detail.from !== undefined && typeof m.detail.from !== 'object') sub = m.detail.from + ' → ' + m.detail.to;
       if (m.kind === 'consume' && m.detail && m.detail.short) sub = '<b style="color:var(--red)">only ' + num(m.detail.taken) + ' were there</b>';
+      if (m.reason) sub += (sub ? ' · ' : '') + '<b>' + esc(m.reason) + '</b>';
       if (m.note) sub += (sub ? ' · ' : '') + esc(m.note);
       if (m.actor) sub += (sub ? ' · ' : '') + esc(String(m.actor).split('@')[0]);
       const qty = m.kind === 'receive' ? '+' + num(m.qty) + (m.part_id || m.product_id ? '' : ' roll' + (num(m.qty) === 1 ? '' : 's')) : m.kind === 'sold' || m.kind === 'consume' ? '−' + num(m.qty) : m.kind === 'made' ? '+' + num(m.qty) : (num(m.qty) > 0 ? '+' : '') + num(m.qty);
@@ -447,10 +502,28 @@ function renderLog(){
         '<td class="n">' + qty + '</td><td class="n">' + (num(m.grams) ? grams(num(m.grams)) : '') + '</td><td class="n">' + (num(m.cost) ? money(num(m.cost)) : '') + '</td><td class="n">' + (['made', 'sold', 'receive', 'adjust', 'consume'].indexOf(m.kind) >= 0 ? '<button class="btn ghost small" data-action="log-undo" data-id="' + esc(m.id) + '">Undo</button>' : '') + '</td></tr>';
     }).join('') + '</table>';
 }
+function movementText(m){ const t = movementTarget(m); const by = (m.detail && m.detail.by || []).map(b => b.color).join(' '); return [t ? (t.name || t.color) : '', t && t.line_name, t && t.sku, t && t.part_no, m.kind, m.reason, m.note, by, m.actor].filter(Boolean).join(' ').toLowerCase(); }
+const FIELD_LABEL = { name: 'name', sku: 'SKU', barcode: 'label code', price: 'price', kind: 'type', plate_qty: 'units per plate', plate_hours: 'plate hours', finishing_min: 'finishing min', packaging: 'packaging', reorder_at: 'minimum', max_level: 'maximum', description: 'description', archived: 'archived', photo_path: 'photo', color: 'color', line_name: 'line', cost: 'cost', grams: 'roll size', custom_price: 'own price', location: 'location', notes: 'notes', part_no: 'part number', category: 'type', vendor: 'vendor', link: 'link', model: 'model', serial: 'serial' };
+const ACTION_LABEL = { created: 'Created', updated: 'Edited', deleted: 'Deleted', settings: 'Settings', replaced_color: 'Color swap', labels_printed: 'Labels', shop: 'Shop', files: 'Files' };
+function changeText(a){ return [a.action, a.entity, a.name, a.actor, a.changes ? Object.keys(a.changes).map(k => (FIELD_LABEL[k] || k) + ' ' + JSON.stringify(a.changes[k])).join(' ') : ''].filter(Boolean).join(' ').toLowerCase(); }
+function fmtChange(k, v){ const f = FIELD_LABEL[k] || k; const show = x => x === null || x === undefined ? '—' : k === 'photo_path' ? (x ? 'set' : 'none') : typeof x === 'boolean' ? (x ? 'yes' : 'no') : ['price', 'cost', 'packaging'].indexOf(k) >= 0 ? money(num(x)) : String(x).length > 40 ? String(x).slice(0, 40) + '…' : String(x); return '<span class="chg">' + esc(f) + ' <b>' + esc(show(v[0])) + ' → ' + esc(show(v[1])) + '</b></span>'; }
+function renderChanges(inRange, q){
+  const ents = ['all', 'product', 'spool', 'part', 'printer', 'settings'];
+  $('#logChips').innerHTML = ents.map(k => '<button class="chip' + (state.ui.logEntity === k || (!state.ui.logEntity && k === 'all') ? ' on' : '') + '" data-action="log-entity" data-k="' + k + '">' + (k === 'all' ? 'Everything' : k === 'spool' ? 'Filament' : k.charAt(0).toUpperCase() + k.slice(1) + 's') + '</button>').join('');
+  const ent = state.ui.logEntity || 'all';
+  const list = state.audit.filter(a => (ent === 'all' || a.entity === ent) && (state.ui.logActor === 'all' || a.actor === state.ui.logActor) && inRange(a.created_at) && (!q || changeText(a).indexOf(q) >= 0));
+  if (!list.length) { $('#logList').innerHTML = '<div class="empty">' + (state.audit.length ? 'Nothing matches those filters.' : 'No changes recorded yet. Creating, editing or deleting anything lands here.') + '</div>'; return; }
+  $('#logList').innerHTML = '<table class="list"><tr><th>When</th><th>What changed</th><th>By</th></tr>' + list.map(a => {
+    const changes = a.changes && typeof a.changes === 'object' ? Object.keys(a.changes).map(k => Array.isArray(a.changes[k]) ? fmtChange(k, a.changes[k]) : '<span class="chg">' + esc(k) + ' <b>' + esc(typeof a.changes[k] === 'object' ? JSON.stringify(a.changes[k]) : String(a.changes[k])) + '</b></span>').join('') : '';
+    const open = a.entity === 'product' && state.products[a.entity_id] ? ' <button class="btn ghost small" data-action="product-open" data-id="' + esc(a.entity_id) + '">Open</button>' : a.entity === 'spool' && state.spools[a.entity_id] ? ' <button class="btn ghost small" data-action="spool-open" data-id="' + esc(a.entity_id) + '">Open</button>' : a.entity === 'part' && state.parts[a.entity_id] ? ' <button class="btn ghost small" data-action="part-open" data-id="' + esc(a.entity_id) + '">Open</button>' : '';
+    return '<tr><td>' + esc(dateShort(a.created_at)) + '<span class="sub">' + esc(timeShort(a.created_at)) + '</span></td><td><span class="tag ' + (a.action === 'deleted' ? '' : 'ok') + '">' + esc(ACTION_LABEL[a.action] || a.action) + '</span> <span class="pbadge">' + esc(a.entity === 'spool' ? 'filament' : a.entity) + '</span> ' + esc(a.name || '') + open + (changes ? '<span class="sub">' + changes + '</span>' : '') + '</td><td>' + esc(who(a.actor)) + '</td></tr>';
+  }).join('') + '</table>';
+}
 const csvq = s => '"' + String(s == null ? '' : s).replace(/"/g, '""') + '"';
 function logCSV(){
-  const rows = [['when', 'kind', 'item', 'qty', 'grams', 'cost', 'revenue', 'detail', 'note', 'by']];
-  state.movements.slice().reverse().forEach(m => { const p = m.product_id ? state.products[m.product_id] : null; const sp = m.spool_id ? state.spools[m.spool_id] : null; const pt = m.part_id ? state.parts[m.part_id] : null; rows.push([m.created_at, m.kind, p ? p.name : sp ? sp.color + ' ' + (sp.line_name || '') : pt ? pt.name + (pt.part_no ? ' ' + pt.part_no : '') : '', num(m.qty), num(m.grams), num(m.cost), m.detail && m.detail.revenue ? num(m.detail.revenue) : '', m.detail ? (m.detail.by || []).map(b => b.color + ' ' + b.grams + 'g').concat((m.detail.components || []).map(cpart => cpart.qty + ' x ' + cpart.name)).join('; ') : '', m.note || '', m.actor || '']); });
+  if (state.ui.logView === 'changes') { const rows = [['when', 'action', 'entity', 'name', 'changes', 'by']]; state.audit.slice().reverse().forEach(a => rows.push([a.created_at, a.action, a.entity, a.name || '', a.changes ? JSON.stringify(a.changes) : '', a.actor || ''])); return rows.map(r => r.map(csvq).join(',')).join('\n'); }
+  const rows = [['when', 'kind', 'item', 'qty', 'grams', 'cost', 'revenue', 'detail', 'reason', 'note', 'by']];
+  state.movements.slice().reverse().forEach(m => { const p = m.product_id ? state.products[m.product_id] : null; const sp = m.spool_id ? state.spools[m.spool_id] : null; const pt = m.part_id ? state.parts[m.part_id] : null; rows.push([m.created_at, m.kind, p ? p.name : sp ? sp.color + ' ' + (sp.line_name || '') : pt ? pt.name + (pt.part_no ? ' ' + pt.part_no : '') : '', num(m.qty), num(m.grams), num(m.cost), m.detail && m.detail.revenue ? num(m.detail.revenue) : '', m.detail ? (m.detail.by || []).map(b => b.color + ' ' + b.grams + 'g').concat((m.detail.components || []).map(cpart => cpart.qty + ' x ' + cpart.name)).join('; ') : '', m.reason || '', m.note || '', m.actor || '']); });
   return rows.map(r => r.map(csvq).join(',')).join('\n');
 }
 
@@ -597,7 +670,7 @@ function renderPartModal(keepFocus){
     '</div><div>' +
       '<div class="field"><label>Fits which printers</label><small>' + (printers.length ? 'Leave all unticked for a part that fits anything.' : 'No printers yet; add them with the Printers button on the Parts page.') + '</small></div>' +
       '<div class="checks">' + printers.map(pr => '<label class="' + (p._printers.indexOf(pr.id) >= 0 ? 'on' : '') + '"><input type="checkbox" data-printer="' + esc(pr.id) + '"' + (p._printers.indexOf(pr.id) >= 0 ? ' checked' : '') + '>' + esc(pr.name) + (pr.model ? ' <span style="opacity:.7">' + esc(pr.model) + '</span>' : '') + '</label>').join('') + '</div>' +
-      (p.id ? '<div class="stockline"><span class="onhand' + (st !== 'ok' ? ' low' : '') + '" id="aOnHand">' + num(p.on_hand) + '</span><span style="font-size:12.5px;color:var(--ink-2)">on hand</span><span style="flex:1"></span><input id="aN" type="number" inputmode="decimal" min="0" step="any" value="1" aria-label="How many"><button class="btn small" data-action="part-recv">Received</button><button class="btn red small" data-action="part-use">Used</button><button class="btn ghost small" data-action="part-set">Set count</button></div><div id="aConfirm"></div>' : '') +
+      (p.id ? '<div class="stockline"><span class="onhand' + (st !== 'ok' ? ' low' : '') + '" id="aOnHand">' + num(p.on_hand) + '</span><span style="font-size:12.5px;color:var(--ink-2)">on hand</span><span style="flex:1"></span><input id="aN" type="number" inputmode="decimal" min="0" step="any" value="1" aria-label="How many"><button class="btn small" data-action="part-recv">Received</button><button class="btn red small" data-action="part-use">Used</button><button class="btn ghost small" data-action="adjust-open" data-kind="part" data-id="' + esc(p.id) + '">Adjust…</button></div><div id="aConfirm"></div>' : '') +
       '<div class="costbox" style="margin-top:14px"><div class="big"><span>Worth on hand</span><b>' + money(num(p.on_hand) * num(p.cost)) + '</b></div><div class="margin">' + num(p.on_hand) + ' × ' + money(num(p.cost)) + (p.link ? ' · <a href="' + esc(p.link) + '" target="_blank" rel="noopener" style="color:var(--red)">reorder link</a>' : '') + '</div></div>' +
     '</div></div>' +
     '<div class="acts">' + (p.id ? '<span style="display:flex;gap:6px"><button class="btn ghost" data-action="part-archive">' + (p.archived ? 'Unarchive' : 'Archive') + '</button><button class="btn danger" data-action="part-delete">Delete</button></span>' : '<span></span>') + '<span class="r"><button class="btn ghost" data-action="modal-close">Cancel</button><button class="btn" data-action="part-save">' + (p.id ? 'Save' : 'Add part') + '</button></span></div>';
@@ -623,6 +696,21 @@ async function savePartFromModal(){
     if (isNew && num(saved.on_hand) > 0) await addMovement({ kind: 'receive', part_id: saved.id, qty: num(saved.on_hand), grams: 0, cost: Math.round(num(saved.on_hand) * num(saved.cost) * 100) / 100, note: 'added' });
     closeModal(); toast(isNew ? saved.name + ' added' : 'Saved'); renderAll();
   } catch (e) {}
+}
+const REASONS = ['Miscount', 'Damaged or failed', 'Gift or sample', 'Returned', 'Lost', 'Used in-house', 'Opening count', 'Other'];
+function openAdjustModal(kind, id){
+  const item = kind === 'product' ? state.products[id] : kind === 'spool' ? state.spools[id] : state.parts[id]; if (!item) return;
+  const name = kind === 'spool' ? item.color + ' · ' + (item.line_name || '') : item.name;
+  const current = kind === 'spool' ? grams(spoolAvailable(item)) + ' on hand (' + rollsOf(item) + ' roll' + (rollsOf(item) === 1 ? '' : 's') + ', ' + grams(openLeft(item)) + ' on the open one)' : num(item.on_hand) + ' on hand';
+  const fields = kind === 'spool'
+    ? fld('adj_rolls', 'Rolls on hand', 'number', rollsOf(item), { hint: 'Including the open one' }) + fld('adj_left', 'Left on the open roll (g)', 'number', rollsOf(item) ? openLeft(item) : 0)
+    : fld('adj_qty', 'New count', 'number', num(item.on_hand));
+  openModal('<div class="mh"><div><h3>Adjust ' + (kind === 'spool' ? 'filament' : 'count') + '</h3><div class="sub">' + esc(name) + ' · ' + esc(current) + '</div></div></div>' +
+    '<div class="fields">' + fields + '</div>' +
+    '<div class="field" style="margin-top:12px"><label>Reason</label><div class="reasons checks">' + REASONS.map((r, i) => '<label class="' + (i === 0 ? 'on' : '') + '"><input type="radio" name="adjReason" value="' + esc(r) + '"' + (i === 0 ? ' checked' : '') + '>' + esc(r) + '</label>').join('') + '</div></div>' +
+    '<div class="field" style="margin-top:10px"><label for="adj_note">Note</label><input id="adj_note" type="text" placeholder="What happened (optional)"></div>' +
+    '<p class="note">Adjustments are logged with the reason so counts can be explained later. Use Made, Sold, Received or Used for the normal moves.</p>' +
+    '<div class="acts"><span class="r"><button class="btn ghost" data-action="modal-close">Cancel</button><button class="btn" data-action="adjust-save" data-kind="' + kind + '" data-id="' + esc(id) + '">Save adjustment</button></span></div>');
 }
 function openPrintersModal(){
   const printers = sortPrinters(Object.values(state.printers));
@@ -707,6 +795,12 @@ document.addEventListener('pointerleave', () => { if (ctip) { ctip.remove(); cti
 let resizeTimer = null; window.addEventListener('resize', () => { clearTimeout(resizeTimer); resizeTimer = setTimeout(() => drawCharts(), 150); });
 
 /* ---------------- detail panels ---------------- */
+function provHTML(item){
+  const lines = [];
+  if (item.created_at) lines.push('Created ' + esc(dateShort(item.created_at)) + ' ' + esc(timeShort(item.created_at)) + (item.created_by ? ' by ' + esc(who(item.created_by)) : ''));
+  if (item.updated_at && item.updated_by && new Date(item.updated_at) - new Date(item.created_at) > 60000) lines.push('Last edited ' + esc(dateShort(item.updated_at)) + ' ' + esc(timeShort(item.updated_at)) + ' by ' + esc(who(item.updated_by)));
+  return lines.length ? '<div class="prov">' + lines.join('<br>') + '</div>' : '';
+}
 function productDetailHTML(p){
   const c = productCost(p); const u = usageFor('product', p.id); const url = photoUrl(p); const st = productStatus(p);
   const colors = c.playset
@@ -725,7 +819,7 @@ function productDetailHTML(p){
     '</div>' +
     '<div class="usage"><h4>' + (c.playset ? 'What goes in it' : 'Colors used') + '</h4></div><div class="colors">' + (colors || '<div class="cr sub">Nothing entered yet</div>') + '</div>' +
     (p.description ? '<p class="note" style="margin-top:10px">' + esc(p.description) + '</p>' : '') +
-    '<div class="dacts"><input type="number" inputmode="numeric" min="1" step="1" value="' + (c.playset ? 1 : c.n) + '" id="pdN-' + esc(p.id) + '" aria-label="How many"><button class="btn small" data-action="pd-make" data-id="' + esc(p.id) + '">' + (c.playset ? 'Assembled' : 'Made') + '</button><button class="btn red small" data-action="pd-sell" data-id="' + esc(p.id) + '">Sold</button><span class="sp"></span><button class="btn ghost small" data-action="product-edit" data-id="' + esc(p.id) + '">Edit</button><button class="iconbtn close" data-action="product-open" data-id="' + esc(p.id) + '" aria-label="Close">×</button></div>' +
+    '<div class="dacts"><input type="number" inputmode="numeric" min="1" step="1" value="' + (c.playset ? 1 : c.n) + '" id="pdN-' + esc(p.id) + '" aria-label="How many"><button class="btn small" data-action="pd-make" data-id="' + esc(p.id) + '">' + (c.playset ? 'Assembled' : 'Made') + '</button><button class="btn red small" data-action="pd-sell" data-id="' + esc(p.id) + '">Sold</button><button class="btn ghost small" data-action="adjust-open" data-kind="product" data-id="' + esc(p.id) + '">Adjust…</button><span class="sp"></span><button class="btn ghost small" data-action="product-edit" data-id="' + esc(p.id) + '">Edit</button><button class="iconbtn close" data-action="product-open" data-id="' + esc(p.id) + '" aria-label="Close">×</button></div>' + provHTML(p) +
     '</div><div class="usage"><h4>Usage</h4><div class="usub">Made and sold per week, last ' + WEEKS + ' weeks</div>' + chartHTML('product:' + p.id, u) +
     '<div class="totals"><span>sold <b>' + u.totals.soldAll + '</b></span><span>made <b>' + u.totals.madeAll + '</b></span><span>sales <b>' + money(u.totals.revenue) + '</b></span>' + (u.totals.lastSold ? '<span>last sold <b>' + esc(dateShort(u.totals.lastSold)) + '</b></span>' : '') + '</div></div></div>';
 }
@@ -742,7 +836,7 @@ function spoolDetailHTML(sp){
     '</div>' +
     '<div class="usage"><h4>Used in</h4></div><div class="colors">' + (usedIn.length ? usedIn.map(p => { const r = recipe(p).filter(x => x.spool_id === sp.id); const g = r.reduce((a, x) => a + (num(x.grams) + num(x.purge_g) + num(x.tower_g)), 0) / plateQty(p); return '<div class="cr"><button class="btn ghost small" data-action="product-open" data-id="' + esc(p.id) + '">' + esc(p.name) + '</button><b>' + grams(g) + ' / unit</b></div>'; }).join('') : '<div class="cr sub">No product uses this color yet</div>') + '</div>' +
     (sp.notes ? '<p class="note" style="margin-top:10px">' + esc(sp.notes) + '</p>' : '') +
-    '<div class="dacts"><button class="btn small" data-action="quick-receive" data-id="' + esc(sp.id) + '">+1 roll received</button><span class="sp"></span><button class="btn ghost small" data-action="spool-edit" data-id="' + esc(sp.id) + '">Edit</button><button class="iconbtn close" data-action="spool-open" data-id="' + esc(sp.id) + '" aria-label="Close">×</button></div>' +
+    '<div class="dacts"><button class="btn small" data-action="quick-receive" data-id="' + esc(sp.id) + '">+1 roll received</button><button class="btn ghost small" data-action="adjust-open" data-kind="spool" data-id="' + esc(sp.id) + '">Adjust…</button><span class="sp"></span><button class="btn ghost small" data-action="spool-edit" data-id="' + esc(sp.id) + '">Edit</button><button class="iconbtn close" data-action="spool-open" data-id="' + esc(sp.id) + '" aria-label="Close">×</button></div>' + provHTML(sp) +
     '</div><div class="usage"><h4>Usage</h4><div class="usub">Grams pulled off this spool per week, last ' + WEEKS + ' weeks</div>' + chartHTML('spool:' + sp.id, u, 'g') +
     '<div class="totals"><span>used <b>' + grams(u.totals.usedAll) + '</b></span><span>≈ <b>' + grams(u.totals.weekly) + '</b> a week</span><span>received <b>' + u.totals.rolls + ' roll' + (u.totals.rolls === 1 ? '' : 's') + '</b></span>' + (u.totals.lastUsed ? '<span>last used <b>' + esc(dateShort(u.totals.lastUsed)) + '</b></span>' : '') + '</div></div></div>';
 }
@@ -757,7 +851,7 @@ function partDetailHTML(pt){
       '<div><span class="fl">Fits</span><span class="fv" style="font-size:15px;line-height:1.3">' + (prs.length ? prs.map(p => esc(p.name)).join(', ') : 'Any printer') + '</span><span class="fs">' + (pt.location ? esc(pt.location) : '') + '</span></div>' +
     '</div>' +
     (pt.notes ? '<p class="note">' + esc(pt.notes) + '</p>' : '') +
-    '<div class="dacts"><input type="number" inputmode="decimal" min="0" step="any" value="1" id="adN-' + esc(pt.id) + '" aria-label="How many"><button class="btn small" data-action="ad-recv" data-id="' + esc(pt.id) + '">Received</button><button class="btn red small" data-action="ad-use" data-id="' + esc(pt.id) + '">Used</button>' + (pt.link ? '<a class="btn ghost small" href="' + esc(pt.link) + '" target="_blank" rel="noopener">Reorder link</a>' : '') + '<span class="sp"></span><button class="btn ghost small" data-action="part-edit" data-id="' + esc(pt.id) + '">Edit</button><button class="iconbtn close" data-action="part-open" data-id="' + esc(pt.id) + '" aria-label="Close">×</button></div>' +
+    '<div class="dacts"><input type="number" inputmode="decimal" min="0" step="any" value="1" id="adN-' + esc(pt.id) + '" aria-label="How many"><button class="btn small" data-action="ad-recv" data-id="' + esc(pt.id) + '">Received</button><button class="btn red small" data-action="ad-use" data-id="' + esc(pt.id) + '">Used</button>' + (pt.link ? '<a class="btn ghost small" href="' + esc(pt.link) + '" target="_blank" rel="noopener">Reorder link</a>' : '') + '<button class="btn ghost small" data-action="adjust-open" data-kind="part" data-id="' + esc(pt.id) + '">Adjust…</button><span class="sp"></span><button class="btn ghost small" data-action="part-edit" data-id="' + esc(pt.id) + '">Edit</button><button class="iconbtn close" data-action="part-open" data-id="' + esc(pt.id) + '" aria-label="Close">×</button></div>' + provHTML(pt) +
     '</div><div class="usage"><h4>Usage</h4><div class="usub">Used per week, last ' + WEEKS + ' weeks</div>' + chartHTML('part:' + pt.id, u) +
     '<div class="totals"><span>used <b>' + u.totals.usedAll + '</b></span><span>received <b>' + u.totals.received + '</b></span>' + (u.totals.lastUsed ? '<span>last used <b>' + esc(dateShort(u.totals.lastUsed)) + '</b></span>' : '') + '</div></div></div>';
 }
@@ -778,7 +872,7 @@ function renderSettings(){
     '</div>';
   const me = state.session && state.session.user ? state.session.user.email : '';
   $('#allowedBox').innerHTML = '<div class="shead" style="font-size:11px;letter-spacing:.16em;text-transform:uppercase;font-weight:600;color:var(--ink-2)">Who can sign in<small style="display:block;font-weight:400;letter-spacing:0;text-transform:none;color:var(--ink-3);font-size:12px;margin-top:2px">Anyone can create an account, but only these emails can see or change the shop.</small></div>' +
-    '<ul>' + state.allowedUsers.map(e => '<li><span>' + esc(e) + (e === me ? ' <span class="badge-ex">you</span>' : '') + '</span>' + (e === me ? '' : '<button class="btn ghost small" data-action="allowed-remove" data-email="' + esc(e) + '">Remove</button>') + '</li>').join('') + '</ul>' +
+    '<div class="people">' + state.allowedUsers.map(e => { const made = state.audit.filter(a => a.actor === e && a.action === 'created'); const n = k => made.filter(a => a.entity === k).length; const moves = state.movements.filter(m => m.actor === e).length; return '<div class="pr"><span>' + esc(e) + (e === me ? ' <span class="badge-ex">you</span>' : '') + '<span class="sub" style="display:block">created ' + n('product') + ' product' + (n('product') === 1 ? '' : 's') + ', ' + n('spool') + ' spool' + (n('spool') === 1 ? '' : 's') + ', ' + n('part') + ' part' + (n('part') === 1 ? '' : 's') + ' · ' + moves + ' stock move' + (moves === 1 ? '' : 's') + '</span></span><span class="sp"></span><button class="btn ghost small" data-action="person-activity" data-email="' + esc(e) + '" data-view="changes">Changes</button><button class="btn ghost small" data-action="person-activity" data-email="' + esc(e) + '" data-view="stock">Stock moves</button>' + (e === me ? '' : '<button class="btn ghost small" data-action="allowed-remove" data-email="' + esc(e) + '">Remove</button>') + '</div>'; }).join('') + '</div>' +
     '<form class="row" id="allowedForm"><input id="allowedEmail" type="email" placeholder="email to allow" required><button class="btn small" type="submit">Allow</button></form>' +
     '<div class="shead" style="font-size:11px;letter-spacing:.16em;text-transform:uppercase;font-weight:600;color:var(--ink-2);margin-top:22px">Your password<small style="display:block;font-weight:400;letter-spacing:0;text-transform:none;color:var(--ink-3);font-size:12px;margin-top:2px">Signed in as ' + esc(me) + '. Change it here; no email needed.</small></div>' +
     '<form class="row" id="passForm" autocomplete="off"><input id="passNew" type="password" placeholder="new password (8+ characters)" autocomplete="new-password" minlength="8" required><input id="passAgain" type="password" placeholder="again" autocomplete="new-password" minlength="8" required><button class="btn small" type="submit">Change</button></form>';
@@ -910,7 +1004,7 @@ function renderProductModal(keepFocus){
       fld('p_min', 'Shelf minimum', 'number', (p.reorder_at !== null && p.reorder_at !== undefined) ? p.reorder_at : '', { placeholder: 'default ' + num(state.settings.productReorderAt) }) + fld('p_barcode', 'Label code', 'text', p.barcode || '', { placeholder: 'made for you if blank', hint: 'Scan a boxed product\'s own barcode here to use it instead' }) + '</div>' +
     '</div><div>' + right +
       '<div class="costbox" id="costbox">' + costboxHTML(c) + '</div>' +
-      (p.id ? '<div class="stockline"><span class="onhand' + (st !== 'ok' ? ' low' : '') + '" id="pOnHand">' + num(p.on_hand) + '</span><span style="font-size:12.5px;color:var(--ink-2)">on the shelf</span><span style="flex:1"></span><input id="pN" type="number" inputmode="numeric" min="1" step="1" value="' + (playset ? 1 : plateQty(p)) + '" aria-label="How many"><button class="btn small" data-action="product-make">' + (playset ? 'Assembled' : 'Made') + '</button><button class="btn red small" data-action="product-sell">Sold</button><button class="btn ghost small" data-action="product-set">Set count</button></div><div id="pConfirm"></div>' : '') +
+      (p.id ? '<div class="stockline"><span class="onhand' + (st !== 'ok' ? ' low' : '') + '" id="pOnHand">' + num(p.on_hand) + '</span><span style="font-size:12.5px;color:var(--ink-2)">on the shelf</span><span style="flex:1"></span><input id="pN" type="number" inputmode="numeric" min="1" step="1" value="' + (playset ? 1 : plateQty(p)) + '" aria-label="How many"><button class="btn small" data-action="product-make">' + (playset ? 'Assembled' : 'Made') + '</button><button class="btn red small" data-action="product-sell">Sold</button><button class="btn ghost small" data-action="adjust-open" data-kind="product" data-id="' + esc(p.id) + '">Adjust…</button></div><div id="pConfirm"></div>' : '') +
     '</div></div>' +
     '<div class="acts">' + (p.id ? '<span style="display:flex;gap:6px"><button class="btn ghost" data-action="product-archive">' + (p.archived ? 'Unarchive' : 'Archive') + '</button><button class="btn danger" data-action="product-delete">Delete</button></span>' : '<span></span>') + '<span class="r"><button class="btn ghost" data-action="modal-close">Cancel</button><button class="btn" data-action="product-save">' + (p.id ? 'Save' : playset ? 'Add playset' : 'Add product') + '</button></span></div>';
   if (keepFocus && !$('#modal').hidden) { const active = document.activeElement; const id = active && active.id; const sel = active && active.selectionStart; const box = $('#modal .box'); box.innerHTML = html; if (id) { const el = document.getElementById(id); if (el) { el.focus(); try { if (sel !== undefined && sel !== null) el.setSelectionRange(sel, sel); } catch (e) {} } } }
@@ -1089,12 +1183,19 @@ document.addEventListener('click', async e => {
   if (a === 'part-delete') { $('#aConfirm').innerHTML = '<div class="confirm">Delete <b>' + esc(partDraft.name) + '</b>? Its history stays in the activity log.<div class="acts"><button class="btn red" data-action="part-delete-do">Delete</button><button class="btn ghost" data-action="part-cancel">Keep it</button></div></div>'; return; }
   if (a === 'part-cancel') { $('#aConfirm').innerHTML = ''; return; }
   if (a === 'part-delete-do') { await deletePart(partDraft.id); closeModal(); toast('Deleted'); renderAll(); return; }
-  if (a === 'part-recv' || a === 'part-use' || a === 'part-set') {
+  if (a === 'part-recv' || a === 'part-use') {
     const pt = state.parts[partDraft.id]; if (!pt) return; const n = Math.max(0, num($('#aN').value));
     if (a === 'part-recv') { if (n <= 0) return; await receivePart(pt, n); toast('Received ' + n); }
     else if (a === 'part-use') { if (n <= 0) return; const had = num(pt.on_hand); await usePart(pt, n); toast('Used ' + n + (had < n ? ' (only ' + had + ' were on hand)' : ''), had < n); }
-    else { await adjustPart(pt, n, 'set on part'); toast('Count set to ' + n); }
     $('#aOnHand').textContent = num(pt.on_hand); partDraft.on_hand = pt.on_hand; renderParts(); renderHome(); renderReorder(); renderLog(); return;
+  }
+  if (a === 'adjust-open') { openAdjustModal(el.dataset.kind, el.dataset.id); return; }
+  if (a === 'adjust-save') {
+    const kind = el.dataset.kind; const reasonEl = document.querySelector('input[name="adjReason"]:checked'); const reason = reasonEl ? reasonEl.value : 'Other'; const note = $('#adj_note').value.trim();
+    if (kind === 'product') { const p = state.products[id]; await adjustProduct(p, num($('#adj_qty').value), note, reason); }
+    else if (kind === 'part') { const pt = state.parts[id]; await adjustPart(pt, num($('#adj_qty').value), note, reason); }
+    else { const sp = state.spools[id]; await adjustSpool(sp, num($('#adj_rolls').value), num($('#adj_left').value), note, reason); }
+    closeModal(); toast('Adjusted · ' + reason); renderAll(); return;
   }
   if (a === 'printers-manage') { openPrintersModal(); return; }
   if (a === 'printer-remove') { const pr = state.printers[id]; if (!pr) return; await deletePrinter(id); toast(pr.name + ' removed'); openPrintersModal(); renderParts(); return; }
@@ -1103,6 +1204,10 @@ document.addEventListener('click', async e => {
   if (a === 'rack-low') { state.ui.lowOnly = !state.ui.lowOnly; renderRack(); return; }
   if (a === 'product-filter') { state.ui.productFilter = el.dataset.k; renderProducts(); return; }
   if (a === 'log-kind') { state.ui.logKind = el.dataset.k; renderLog(); return; }
+  if (a === 'log-entity') { state.ui.logEntity = el.dataset.k; renderLog(); return; }
+  if (a === 'log-view') { state.ui.logView = el.dataset.k; renderLog(); return; }
+  if (a === 'log-clear') { state.ui.logActor = 'all'; state.ui.logFrom = ''; state.ui.logTo = ''; state.ui.logQ = ''; state.ui.logKind = 'all'; state.ui.logEntity = 'all'; renderLog(); return; }
+  if (a === 'person-activity') { state.ui.logActor = el.dataset.email; state.ui.logView = el.dataset.view || 'changes'; goTab('log'); renderLog(); return; }
   if (a === 'label-kind') { state.ui.labelKind = el.dataset.k; renderLabels(); return; }
   if (a === 'labels-print') { document.querySelectorAll('section.sec').forEach(s => s.classList.toggle('printing', s.id === 'labels')); window.print(); return; }
   if (a === 'scan-mode') { state.ui.scanMode = el.dataset.k; renderScanModes(); return; }
@@ -1172,11 +1277,10 @@ document.addEventListener('click', async e => {
   if (a === 'product-delete') { $('#pConfirm').innerHTML = '<div class="confirm">Delete <b>' + esc(draft.name) + '</b> and its recipe? Its history stays in the activity log.<div class="acts"><button class="btn red" data-action="product-delete-do">Delete</button><button class="btn ghost" data-action="product-delete-cancel">Keep it</button></div></div>'; return; }
   if (a === 'product-delete-cancel') { $('#pConfirm').innerHTML = ''; return; }
   if (a === 'product-delete-do') { await deleteProduct(draft.id); closeModal(); toast('Deleted'); renderAll(); return; }
-  if (a === 'product-make' || a === 'product-sell' || a === 'product-set') {
+  if (a === 'product-make' || a === 'product-sell') {
     const p = state.products[draft.id]; if (!p) return; const n = Math.max(0, Math.round(num($('#pN').value)));
     if (a === 'product-make') { if (n < 1) return; const { c, pulls, parts } = spoolPullFor(p, n); const lines = pulls.map(pl => { const sp = state.spools[pl.spoolId]; return esc(sp.color) + ' ' + grams(pl.grams); }); const partLines = parts.map(pt => { const cp = state.products[pt.productId]; const have = cp ? num(cp.on_hand) : 0; return pt.qty + ' × ' + esc(pt.name) + (have < pt.qty ? ' <b style="color:var(--red)">(only ' + have + ' on the shelf)</b>' : ''); }); const what = isPlayset(p) ? 'take ' + (partLines.join(' · ') || 'nothing (the set is empty)') + ' off the shelf' : 'pull ' + (lines.join(' · ') || 'no filament (no colors entered)') + ' off the rack'; $('#pConfirm').innerHTML = '<div class="confirm">' + (isPlayset(p) ? 'Assemble' : 'Make') + ' <b>' + n + '</b>: ' + what + ', cost ' + money(c.unit * n) + '.<div class="acts"><button class="btn red" data-action="product-make-do" data-n="' + n + '">' + (isPlayset(p) ? 'Assembled ' : 'Made ') + n + '</button><button class="btn ghost" data-action="product-delete-cancel">Cancel</button></div></div>'; return; }
     if (a === 'product-sell') { if (n < 1) return; await sellProduct(p, n); $('#pOnHand').textContent = num(p.on_hand); $('#pConfirm').innerHTML = ''; toast('Sold ' + n + ', ' + num(p.on_hand) + ' left'); renderProducts(); renderLog(); renderReorder(); return; }
-    if (a === 'product-set') { await adjustProduct(p, n, 'set on product'); $('#pOnHand').textContent = num(p.on_hand); toast('Shelf count set to ' + n); renderProducts(); renderLog(); renderReorder(); return; }
   }
   if (a === 'product-make-do') { const p = state.products[draft.id]; const n = num(el.dataset.n); const r = await makeProduct(p, n); $('#pOnHand').textContent = num(p.on_hand); $('#pConfirm').innerHTML = ''; toast((isPlayset(p) ? 'Assembled ' : 'Made ') + n + ', ' + num(p.on_hand) + ' on the shelf' + (r.shorts.length ? ' · ' + r.shorts.join(', ') : '')); renderAll(); return; }
   if (a === 'log-undo') { const m = state.movements.find(x => x.id === id); if (!m) return; await undoMovement(m); toast('Undone'); renderAll(); return; }
@@ -1202,6 +1306,9 @@ document.addEventListener('change', async e => {
   const el = e.target;
   if (el.id === 'pPhotoFile') { const f = el.files && el.files[0]; if (!f) return; if (partDraft && $('#a_name')) { partDraft._photoFile = f; partDraft._photoPreview = URL.createObjectURL(f); readPartForm(); renderPartModal(true); return; } draft._photoFile = f; draft._photoPreview = URL.createObjectURL(f); readProductForm(); renderProductModal(true); return; }
   if (el.dataset.printer !== undefined) { el.closest('label').classList.toggle('on', el.checked); return; }
+  if (el.name === 'adjReason') { document.querySelectorAll('input[name="adjReason"]').forEach(r => r.closest('label').classList.toggle('on', r.checked)); return; }
+  if (el.id === 'logActor') { state.ui.logActor = el.value; renderLog(); return; }
+  if (el.id === 'logFrom' || el.id === 'logTo') { state.ui[el.id] = el.value; renderLog(); return; }
   if (el.dataset.rec !== undefined && el.dataset.field === 'spool_id') { readProductForm(); draft._rec[+el.dataset.rec].spool_id = el.value; renderProductModal(true); return; }
   if (el.dataset.comp !== undefined && el.dataset.field === 'component_id') { readProductForm(); draft._comps[+el.dataset.comp].component_id = el.value; renderProductModal(true); return; }
 });
@@ -1210,6 +1317,7 @@ document.addEventListener('input', e => {
   if (el.id === 'wallSearch') { state.ui.q = el.value; renderWall(); return; }
   if (el.id === 'productSearch') { state.ui.productQ = el.value; renderProducts(); return; }
   if (el.id === 'partSearch') { state.ui.partQ = el.value; renderParts(); return; }
+  if (el.id === 'logQ') { state.ui.logQ = el.value; renderLog(); return; }
   if (el.id === 'm_hexpick') { const h = $('#m_hex'); if (h) h.value = el.value.toUpperCase(); return; }
   if (el.id === 'm_hex') { const v = el.value.trim(); if (/^#[0-9a-fA-F]{6}$/.test(v)) { const pk = $('#m_hexpick'); if (pk) pk.value = v.toLowerCase(); } return; }
   if (el.dataset.rec !== undefined && ['grams', 'purge_g', 'tower_g'].indexOf(el.dataset.field) >= 0) { draft._rec[+el.dataset.rec][el.dataset.field] = num(el.value); refreshCostbox(); return; }
