@@ -116,9 +116,9 @@ function productCost(p, depth){
   const otherG = playset ? 0 : g * num(S.otherWastePct) / 100;
   const otherWaste = playset ? 0 : material * num(S.otherWastePct) / 100;
   const hours = playset ? 0 : num(p.plate_hours) / n;
-  const energy = hours * num(S.energyRate);
+  const energy = modOn('energy') ? hours * num(S.energyRate) : 0;
   const base = material + otherWaste + energy; const failure = playset ? 0 : base * num(S.failurePct) / 100;
-  const labor = num(p.finishing_min) / 60 * num(S.laborRate); const packaging = num(p.packaging);
+  const labor = modOn('labor') ? num(p.finishing_min) / 60 * num(S.laborRate) : 0; const packaging = modOn('packaging') ? num(p.packaging) : 0;
   const unit = base + failure + labor + packaging;
   const price = num(p.price); const margin = price > 0 ? (price - unit) / price * 100 : null;
   const target = num(S.marginPct); const suggested = (target > 0 && target < 100) ? unit / (1 - target / 100) : 0;
@@ -323,7 +323,7 @@ async function addMovement(m){
 async function deleteMovement(id){ await dbWrite(() => sb.from('movements').delete().eq('id', id), 'Could not remove the entry'); state.movements = state.movements.filter(m => m.id !== id); }
 let settingsTimer = null, settingsDirty = false;
 let settingsSnapshot = null;
-function saveSettingsSoon(){ if (!settingsSnapshot) settingsSnapshot = JSON.parse(JSON.stringify(state.settings)); clearTimeout(settingsTimer); settingsDirty = true; setStatus('saving'); settingsTimer = setTimeout(async () => { try { await dbWrite(() => sb.from('shop_settings').upsert({ id: 1, data: state.settings }), 'Could not save settings'); settingsDirty = false; const before = settingsSnapshot || {}; settingsSnapshot = null; const ch = {}; const flat = o => { const out = {}; Object.keys(o || {}).forEach(k => { if (k === 'linePrices') Object.keys(o[k] || {}).forEach(l => out['price ' + l] = o[k][l] ? o[k][l].cost + '/' + o[k][l].grams + 'g' : null); else if (typeof o[k] !== 'object') out[k] = o[k]; }); return out; }; const a = flat(before), b = flat(state.settings); Object.keys(Object.assign({}, a, b)).forEach(k => { if (String(a[k]) !== String(b[k])) ch[k] = [a[k] === undefined ? null : a[k], b[k] === undefined ? null : b[k]]; }); if (Object.keys(ch).length) logChange('settings', 'settings', null, 'Shop settings', ch); } catch (e) {} }, 600); }
+function saveSettingsSoon(){ if (!settingsSnapshot) settingsSnapshot = JSON.parse(JSON.stringify(state.settings)); clearTimeout(settingsTimer); settingsDirty = true; setStatus('saving'); settingsTimer = setTimeout(async () => { try { await dbWrite(() => sb.from('shop_settings').upsert({ id: 1, data: state.settings }), 'Could not save settings'); settingsDirty = false; const before = settingsSnapshot || {}; settingsSnapshot = null; const ch = {}; const flat = o => { const out = {}; Object.keys(o || {}).forEach(k => { if (k === 'linePrices') Object.keys(o[k] || {}).forEach(l => out['price ' + l] = o[k][l] ? o[k][l].cost + '/' + o[k][l].grams + 'g' : null); else if (k === 'shop') { const sh = o[k] || {}; out['shop name'] = sh.name || null; out['tagline'] = sh.tagline || null; out['logo'] = sh.logo_path ? 'set' : null; out['kind'] = sh.kind || null; Object.keys(sh.modules || {}).forEach(m => out['show ' + m] = sh.modules[m] === false ? 'off' : 'on'); } else if (typeof o[k] !== 'object') out[k] = o[k]; }); return out; }; const a = flat(before), b = flat(state.settings); Object.keys(Object.assign({}, a, b)).forEach(k => { if (String(a[k]) !== String(b[k])) ch[k] = [a[k] === undefined ? null : a[k], b[k] === undefined ? null : b[k]]; }); if (Object.keys(ch).length) logChange('settings', 'settings', null, 'Shop settings', ch); } catch (e) {} }, 600); }
 
 /* ---------------- stock actions ---------------- */
 async function receiveSpool(sp, n, note){
@@ -611,7 +611,9 @@ async function markLabelsPrinted(items){
 const TABS = { home: ['home', 'reorder'], products: ['products'], filament: ['rack', 'wall'], parts: ['parts'], log: ['log'], labels: ['labels'], settings: ['settings'] };
 function applyTab(){
   const tab = TABS[state.ui.tab] ? state.ui.tab : 'home'; const show = TABS[tab];
-  document.querySelectorAll('section.sec').forEach(sec => { sec.hidden = show.indexOf(sec.id) < 0; sec.classList.toggle('tab-last', sec.id === show[show.length - 1]); });
+  const secOn = id => id === 'wall' ? modOn('wall') : id === 'parts' ? modOn('parts') : id === 'labels' ? modOn('labels') : id === 'log' ? modOn('activity') : true;
+  const visible = show.filter(secOn);
+  document.querySelectorAll('section.sec').forEach(sec => { sec.hidden = visible.indexOf(sec.id) < 0; sec.classList.toggle('tab-last', sec.id === visible[visible.length - 1]); });
   document.querySelectorAll('nav.steps a').forEach(a => a.classList.toggle('on', a.dataset.tab === tab));
 }
 function goTab(tab, anchor){
@@ -921,7 +923,7 @@ function productDetailHTML(p){
     (p.description ? '<p class="note" style="margin-top:10px">' + esc(p.description) + '</p>' : '') +
     ((state.files[p.id] || []).length ? '<div class="usage" style="margin-top:12px"><h4>Print files</h4></div>' + filesHTML(p.id, false) : '') +
     '<div class="dacts"><input type="number" inputmode="numeric" min="1" step="1" value="' + (c.playset ? 1 : c.n) + '" id="pdN-' + esc(p.id) + '" aria-label="How many"><button class="btn small" data-action="pd-make" data-id="' + esc(p.id) + '">' + (c.playset ? 'Assembled' : 'Made') + '</button><button class="btn red small" data-action="pd-sell" data-id="' + esc(p.id) + '">Sold</button><button class="btn ghost small" data-action="adjust-open" data-kind="product" data-id="' + esc(p.id) + '">Adjust…</button><span class="sp"></span><button class="btn ghost small" data-action="product-edit" data-id="' + esc(p.id) + '">Edit</button><button class="iconbtn close" data-action="product-open" data-id="' + esc(p.id) + '" aria-label="Close">×</button></div>' + provHTML(p) +
-    '</div><div class="usage"><h4>Usage</h4><div class="usub">Made and sold per week, last ' + WEEKS + ' weeks</div>' + chartHTML('product:' + p.id, u) +
+    '</div>' + (modOn('charts') ? '<div class="usage"><h4>Usage</h4><div class="usub">Made and sold per week, last ' + WEEKS + ' weeks</div>' + chartHTML('product:' + p.id, u) : '<div class="usage"><h4>Totals</h4>') +
     '<div class="totals"><span>sold <b>' + u.totals.soldAll + '</b></span><span>made <b>' + u.totals.madeAll + '</b></span><span>sales <b>' + money(u.totals.revenue) + '</b></span>' + (u.totals.lastSold ? '<span>last sold <b>' + esc(dateShort(u.totals.lastSold)) + '</b></span>' : '') + '</div></div></div>';
 }
 function spoolDetailHTML(sp){
@@ -938,7 +940,7 @@ function spoolDetailHTML(sp){
     '<div class="usage"><h4>Used in</h4></div><div class="colors">' + (usedIn.length ? usedIn.map(p => { const r = recipe(p).filter(x => x.spool_id === sp.id); const g = r.reduce((a, x) => a + (num(x.grams) + num(x.purge_g) + num(x.tower_g)), 0) / plateQty(p); return '<div class="cr"><button class="btn ghost small" data-action="product-open" data-id="' + esc(p.id) + '">' + esc(p.name) + '</button><b>' + grams(g) + ' / unit</b></div>'; }).join('') : '<div class="cr sub">No product uses this color yet</div>') + '</div>' +
     (sp.notes ? '<p class="note" style="margin-top:10px">' + esc(sp.notes) + '</p>' : '') +
     '<div class="dacts"><button class="btn small" data-action="quick-receive" data-id="' + esc(sp.id) + '">+1 roll received</button><button class="btn ghost small" data-action="adjust-open" data-kind="spool" data-id="' + esc(sp.id) + '">Adjust…</button><span class="sp"></span><button class="btn ghost small" data-action="spool-edit" data-id="' + esc(sp.id) + '">Edit</button><button class="iconbtn close" data-action="spool-open" data-id="' + esc(sp.id) + '" aria-label="Close">×</button></div>' + provHTML(sp) +
-    '</div><div class="usage"><h4>Usage</h4><div class="usub">Grams pulled off this spool per week, last ' + WEEKS + ' weeks</div>' + chartHTML('spool:' + sp.id, u, 'g') +
+    '</div>' + (modOn('charts') ? '<div class="usage"><h4>Usage</h4><div class="usub">Grams pulled off this spool per week, last ' + WEEKS + ' weeks</div>' + chartHTML('spool:' + sp.id, u, 'g') : '<div class="usage"><h4>Totals</h4>') +
     '<div class="totals"><span>used <b>' + grams(u.totals.usedAll) + '</b></span><span>≈ <b>' + grams(u.totals.weekly) + '</b> a week</span><span>received <b>' + u.totals.rolls + ' roll' + (u.totals.rolls === 1 ? '' : 's') + '</b></span>' + (u.totals.lastUsed ? '<span>last used <b>' + esc(dateShort(u.totals.lastUsed)) + '</b></span>' : '') + '</div></div></div>';
 }
 function partDetailHTML(pt){
@@ -953,8 +955,88 @@ function partDetailHTML(pt){
     '</div>' +
     (pt.notes ? '<p class="note">' + esc(pt.notes) + '</p>' : '') +
     '<div class="dacts"><input type="number" inputmode="decimal" min="0" step="any" value="1" id="adN-' + esc(pt.id) + '" aria-label="How many"><button class="btn small" data-action="ad-recv" data-id="' + esc(pt.id) + '">Received</button><button class="btn red small" data-action="ad-use" data-id="' + esc(pt.id) + '">Used</button>' + (pt.link ? '<a class="btn ghost small" href="' + esc(pt.link) + '" target="_blank" rel="noopener">Reorder link</a>' : '') + '<button class="btn ghost small" data-action="adjust-open" data-kind="part" data-id="' + esc(pt.id) + '">Adjust…</button><span class="sp"></span><button class="btn ghost small" data-action="part-edit" data-id="' + esc(pt.id) + '">Edit</button><button class="iconbtn close" data-action="part-open" data-id="' + esc(pt.id) + '" aria-label="Close">×</button></div>' + provHTML(pt) +
-    '</div><div class="usage"><h4>Usage</h4><div class="usub">Used per week, last ' + WEEKS + ' weeks</div>' + chartHTML('part:' + pt.id, u) +
+    '</div>' + (modOn('charts') ? '<div class="usage"><h4>Usage</h4><div class="usub">Used per week, last ' + WEEKS + ' weeks</div>' + chartHTML('part:' + pt.id, u) : '<div class="usage"><h4>Totals</h4>') +
     '<div class="totals"><span>used <b>' + u.totals.usedAll + '</b></span><span>received <b>' + u.totals.received + '</b></span>' + (u.totals.lastUsed ? '<span>last used <b>' + esc(dateShort(u.totals.lastUsed)) + '</b></span>' : '') + '</div></div></div>';
+}
+
+
+/* ---------------- shop customization ---------------- */
+const MODULES = [
+  ['parts', 'Parts & accessories', 'The spares drawer, tied to your printers'],
+  ['playsets', 'Playsets', 'Bundle products into sets'],
+  ['wall', 'Color wall', 'Every Bambu PLA color to pick from'],
+  ['charts', 'Usage charts', '12-week made / sold / used charts on every item'],
+  ['labels', 'Labels', 'Printable barcodes for scanning'],
+  ['energy', 'Energy cost', 'Charge printer hours at a flat rate'],
+  ['labor', 'Finishing labor', 'Minutes per unit at your hourly rate'],
+  ['packaging', 'Packaging cost', 'Dollars per unit for boxes, bags, cards'],
+  ['activity', 'Activity tab', 'Stock moves and the changes log']
+];
+const SHOP_DEFAULT = { name: '', tagline: 'shop', madein: '', logo_path: null, kind: '3d', modules: {} };
+function shopCfg(){ const sh = Object.assign({}, SHOP_DEFAULT, state.settings.shop || {}); sh.modules = Object.assign({}, sh.modules || {}); return sh; }
+function modOn(key){ const m = shopCfg().modules; return m[key] !== false; }
+function shopLogoUrl(){ const sh = shopCfg(); return sh.logo_path ? sb.storage.from(CONFIG.photoBucket).getPublicUrl(sh.logo_path).data.publicUrl : ''; }
+function applyShop(){
+  const sh = shopCfg(); const name = sh.name || 'Your shop';
+  document.querySelectorAll('[data-shop="name"]').forEach(el => el.textContent = name);
+  document.querySelectorAll('[data-shop="tagline"]').forEach(el => { el.textContent = sh.tagline || ''; el.style.display = sh.tagline ? '' : 'none'; });
+  document.querySelectorAll('[data-shop="madein"]').forEach(el => { el.textContent = sh.madein || ''; el.style.display = sh.madein ? '' : 'none'; });
+  const logo = shopLogoUrl();
+  document.querySelectorAll('[data-logo]').forEach(el => { if (logo) el.innerHTML = '<img src="' + esc(logo) + '" alt="">'; else if (sh.name && sh.name !== 'Mostly 3D') el.innerHTML = '<span class="mono">' + esc(sh.name.trim().charAt(0).toUpperCase()) + '</span>'; else el.innerHTML = '<svg class="mark" aria-hidden="true"><use href="#indiana"/></svg>'; });
+  document.title = name + (sh.tagline ? ' · ' + sh.tagline : '');
+  // modules: hide tabs, sections and buttons that are switched off
+  const navFor = { parts: 'parts', labels: 'labels', activity: 'log' };
+  Object.keys(navFor).forEach(k => { const a = document.querySelector('nav.steps a[data-tab="' + navFor[k] + '"]'); if (a) a.hidden = !modOn(k); });
+  const ps = document.querySelector('[data-action="playset-new"]'); if (ps) ps.hidden = !modOn('playsets');
+  const wall = document.getElementById('wall'); if (wall) wall.dataset.off = modOn('wall') ? '' : '1';
+  if (!modOn(state.ui.tab === 'log' ? 'activity' : state.ui.tab)) { if (!TABS[state.ui.tab] || ['parts', 'labels', 'log'].indexOf(state.ui.tab) >= 0) { state.ui.tab = 'home'; applyTab(); } }
+}
+// applyTab respects switched-off sections
+const _applyTab = applyTab;
+function renderModules(){
+  const sh = shopCfg();
+  $('#modulesBox').innerHTML = '<div class="shead" style="font-size:11px;letter-spacing:.16em;text-transform:uppercase;font-weight:600;color:var(--ink-2)">What shows on screen<small style="display:block;font-weight:400;letter-spacing:0;text-transform:none;color:var(--ink-3);font-size:12px;margin-top:2px">Switch off anything your shop does not use. Nothing is deleted; it is just hidden.</small></div>' +
+    '<div class="mods">' + MODULES.map(([k, label, hint]) => '<label class="mod' + (modOn(k) ? '' : ' off') + '"><input type="checkbox" data-module="' + k + '"' + (modOn(k) ? ' checked' : '') + '><span>' + esc(label) + '<small>' + esc(hint) + '</small></span></label>').join('') + '</div>';
+}
+let wiz = null;
+function openSetupModal(step){
+  if (!wiz) { const sh = shopCfg(); wiz = { step: 1, name: sh.name, tagline: sh.tagline, madein: sh.madein, kind: sh.kind || '3d', modules: Object.assign({}, sh.modules), logoFile: null, logoPreview: shopLogoUrl(), clearLogo: false }; }
+  if (step) wiz.step = step;
+  renderSetupModal();
+}
+function renderSetupModal(){
+  const w = wiz; const dots = '<div class="wiz-steps">' + [1, 2, 3, 4].map(i => '<span class="' + (i <= w.step ? 'on' : '') + '"></span>').join('') + '</div>';
+  let body = '';
+  if (w.step === 1) body = '<div class="mh"><div><h3>Your shop</h3><div class="sub">Step 1 of 4 · how it shows at the top of every page</div></div></div>' + dots +
+    '<div style="display:flex;gap:16px;align-items:flex-start;flex-wrap:wrap"><div><div class="logo-preview" id="wizLogo">' + (w.logoPreview ? '<img src="' + esc(w.logoPreview) + '" alt="">' : '<span class="ph" style="font-size:10px;letter-spacing:.12em;text-transform:uppercase;color:var(--ink-3)">logo</span>') + '</div><div class="photo-acts"><input type="file" id="wizLogoFile" accept="image/png,image/jpeg,image/svg+xml,image/webp" hidden><button class="btn ghost small" data-action="wiz-logo-pick">' + (w.logoPreview ? 'Change' : 'Upload logo') + '</button>' + (w.logoPreview ? '<button class="btn ghost small" data-action="wiz-logo-clear">Remove</button>' : '') + '</div></div>' +
+    '<div class="fields" style="flex:1 1 260px">' + fld('wiz_name', 'Shop name', 'text', w.name || '', { wide: true, placeholder: 'Mostly 3D' }) + fld('wiz_tagline', 'Small script line', 'text', w.tagline || '', { placeholder: 'shop', hint: 'Shown in the handwritten style' }) + fld('wiz_madein', 'Letterspaced line', 'text', w.madein || '', { placeholder: 'Made in Southern Indiana' }) + '</div></div>' +
+    '<p class="note" style="margin-top:12px">No logo? The first letter of your name becomes the mark.</p>';
+  if (w.step === 2) body = '<div class="mh"><div><h3>What you make</h3><div class="sub">Step 2 of 4 · sets the words and the materials</div></div></div>' + dots +
+    '<div class="wiz-kind">' + [['3d', '3D printing', 'Bambu color wall, filament by the gram, purge and tower waste, printers and parts'], ['maker', 'Other maker shop', 'Same costing engine without the Bambu wall: add your own materials by the gram']].map(([k, t, d]) => '<label class="' + (w.kind === k ? 'on' : '') + '"><input type="radio" name="wizKind" value="' + k + '"' + (w.kind === k ? ' checked' : '') + '><b>' + t + '</b><small>' + d + '</small></label>').join('') + '</div>';
+  if (w.step === 3) body = '<div class="mh"><div><h3>What shows on screen</h3><div class="sub">Step 3 of 4 · switch off what you do not use; you can change this any time under Settings</div></div></div>' + dots +
+    '<div class="modules"><div class="mods">' + MODULES.map(([k, label, hint]) => '<label class="mod' + (w.modules[k] === false ? ' off' : '') + '"><input type="checkbox" data-wizmod="' + k + '"' + (w.modules[k] === false ? '' : ' checked') + '><span>' + esc(label) + '<small>' + esc(hint) + '</small></span></label>').join('') + '</div></div>';
+  if (w.step === 4) body = '<div class="mh"><div><h3>Ready</h3><div class="sub">Step 4 of 4</div></div></div>' + dots +
+    '<div class="colors"><div class="cr">Shop<b>' + esc(w.name || 'Your shop') + '</b></div><div class="cr">Kind<b>' + (w.kind === '3d' ? '3D printing' : 'Maker shop') + '</b></div><div class="cr">Showing<b>' + MODULES.filter(([k]) => w.modules[k] !== false).length + ' of ' + MODULES.length + ' modules</b></div></div>' +
+    '<p class="note" style="margin-top:12px">Next: put your materials on the rack, add your first product with the slicer numbers, and print labels. Teammates can be invited under Settings → Who can sign in.</p>';
+  const acts = '<div class="acts">' + (w.step > 1 ? '<button class="btn ghost" data-action="wiz-back">Back</button>' : '<span></span>') + '<span class="r"><button class="btn ghost" data-action="wiz-cancel">Cancel</button>' + (w.step < 4 ? '<button class="btn" data-action="wiz-next">Continue</button>' : '<button class="btn" data-action="wiz-finish">Finish</button>') + '</span></div>';
+  openModal(body + acts);
+}
+function readWizStep(){
+  const w = wiz; if (w.step === 1) { w.name = $('#wiz_name').value.trim(); w.tagline = $('#wiz_tagline').value.trim(); w.madein = $('#wiz_madein').value.trim(); }
+  if (w.step === 2) { const r = document.querySelector('input[name="wizKind"]:checked'); if (r) w.kind = r.value; }
+  if (w.step === 3) { document.querySelectorAll('input[data-wizmod]').forEach(cb => { w.modules[cb.dataset.wizmod] = cb.checked; }); }
+}
+async function finishWizard(){
+  readWizStep(); const w = wiz; const sh = shopCfg();
+  if (!w.name) { toast('Give the shop a name', true); w.step = 1; renderSetupModal(); return; }
+  let logo_path = w.clearLogo ? null : sh.logo_path;
+  if (w.logoFile) {
+    const f = w.logoFile; const ext = (f.name.split('.').pop() || 'png').toLowerCase(); const path = 'shop/logo-' + Date.now() + '.' + (['png', 'svg', 'webp', 'jpg', 'jpeg'].indexOf(ext) >= 0 ? ext : 'png');
+    const up = await sb.storage.from(CONFIG.photoBucket).upload(path, f, { contentType: f.type || 'image/png', upsert: true }); if (up.error) fail(up.error, 'Could not upload the logo'); else { if (sh.logo_path) removePhotos([sh.logo_path]); logo_path = path; }
+  } else if (w.clearLogo && sh.logo_path) removePhotos([sh.logo_path]);
+  if (w.kind !== '3d') w.modules.wall = false;
+  state.settings.shop = { name: w.name, tagline: w.tagline, madein: w.madein, logo_path, kind: w.kind, modules: w.modules };
+  wiz = null; closeModal(); saveSettingsSoon(); applyShop(); renderAll(); toast('Shop saved');
 }
 
 /* ---------------- render: settings ---------------- */
@@ -983,7 +1065,7 @@ function renderAll(){
   // Remember which input had focus so a background refresh does not steal it mid-typing.
   const ae = document.activeElement; let find = null, sel = null;
   if (ae && ae.tagName === 'INPUT') { try { sel = ae.selectionStart; } catch (e) {} if (ae.dataset.setting) find = '[data-setting="' + ae.dataset.setting + '"]'; else if (ae.dataset.lineprice) find = '[data-lineprice="' + ae.dataset.lineprice + '"][data-field="' + ae.dataset.field + '"]'; }
-  renderProducts(); renderRack(); renderChips(); renderWall(); renderParts(); renderLog(); renderReorder(); renderLabels(); renderSettings(); renderScanModes(); renderHome(); applyTab();
+  applyShop(); renderProducts(); renderRack(); renderChips(); renderWall(); renderParts(); renderLog(); renderReorder(); renderLabels(); renderSettings(); renderModules(); renderScanModes(); renderHome(); applyTab();
   if (find) { const el = document.querySelector(find); if (el) { el.focus(); try { if (sel !== null) el.setSelectionRange(sel, sel); } catch (e) {} } }
 }
 
@@ -1088,7 +1170,7 @@ function renderProductModal(keepFocus){
       '<div class="field"><label>What goes in the set</label></div><div class="comps" id="comps">' + compRowsHTML() + '</div>' +
       '<div style="margin-top:8px"><button class="btn ghost small" data-action="comp-add">Add a product</button></div>' +
       '<p class="note" style="margin-top:10px">Making a set takes those products off their shelves and puts a set on this one. Their cost comes in automatically; add the set\'s own packaging or finishing below.</p>' +
-      '<div class="grid3" style="margin-top:14px">' + fld('p_fin', 'Finishing min per set', 'number', v('finishing_min')) + fld('p_pack', 'Packaging $ per set', 'number', v('packaging')) + '</div>'
+      '<div class="grid3" style="margin-top:14px">' + (modOn('labor') ? fld('p_fin', 'Finishing min per set', 'number', v('finishing_min')) : '<input type="hidden" id="p_fin" value="' + v('finishing_min') + '">') + (modOn('packaging') ? fld('p_pack', 'Packaging $ per set', 'number', v('packaging')) : '<input type="hidden" id="p_pack" value="' + v('packaging') + '">') + '</div>'
     :
       '<div class="recipe" id="recipe">' + recipeRowsHTML() + '</div>' +
       '<div style="margin-top:8px"><button class="btn ghost small" data-action="rec-add">Add a color</button></div>' +
@@ -1096,7 +1178,7 @@ function renderProductModal(keepFocus){
         (p._mode === 'plate' ? fld('p_plate_qty', 'Units on the plate', 'number', plateQty(p), { hint: 'Everything above is divided by this' }) : '<div></div>') +
         fld('p_plate_hours', p._mode === 'plate' ? 'Plate print time (h)' : 'Print time (h)', 'number', v('plate_hours'), { hint: 'From the slicer' }) + '</div>' +
       perUnitHTML(c) +
-      '<div class="grid3" style="margin-top:14px">' + fld('p_fin', 'Finishing min per unit', 'number', v('finishing_min')) + fld('p_pack', 'Packaging $ per unit', 'number', v('packaging')) + '</div>';
+      '<div class="grid3" style="margin-top:14px">' + (modOn('labor') ? fld('p_fin', 'Finishing min per unit', 'number', v('finishing_min')) : '<input type="hidden" id="p_fin" value="' + v('finishing_min') + '">') + (modOn('packaging') ? fld('p_pack', 'Packaging $ per unit', 'number', v('packaging')) : '<input type="hidden" id="p_pack" value="' + v('packaging') + '">') + '</div>';
   const html = '<div class="mh"><div><h3>' + title + '</h3><div class="sub">' + (p.id ? esc(p.name || '') + (p.barcode ? ' · label ' + esc(p.barcode) : '') : playset ? 'Pick the products that go in it; the cost adds itself up' : 'Photo, the slicer\'s filament numbers, and the price you charge') + '</div></div></div>' +
     '<div class="pedit"><div>' +
       '<div class="photo" id="pPhoto">' + (p._photoPreview ? '<img src="' + esc(p._photoPreview) + '" alt="">' : '<span class="ph">Add a photo<br><small style="letter-spacing:0;text-transform:none;font-weight:400">Camera or library on an iPad</small></span>') + '</div>' +
@@ -1304,6 +1386,13 @@ document.addEventListener('click', async e => {
   if (a === 'file-remove') { const f = Object.values(state.files).flat().find(x => x.id === id); if (!f) return; await removeProductFile(f); readProductForm(); renderProductModal(true); toast('File removed'); return; }
   if (a === 'file-download') { const f = Object.values(state.files).flat().find(x => x.id === id); if (!f) return; const url = await signedFileUrl(f); if (url) { const link = document.createElement('a'); link.href = url; link.download = f.name; link.rel = 'noopener'; document.body.appendChild(link); link.click(); link.remove(); } return; }
   if (a === 'file-slicer') { const f = Object.values(state.files).flat().find(x => x.id === id); if (!f) return; const url = await signedFileUrl(f); if (!url) return; const scheme = el.dataset.app === 'orca' ? 'orcaslicer' : 'bambustudio'; window.location.href = scheme + '://open?file=' + encodeURIComponent(url); toast('Opening in ' + (el.dataset.app === 'orca' ? 'OrcaSlicer' : 'Bambu Studio') + '… if nothing happens, use Download'); return; }
+  if (a === 'setup-open') { wiz = null; openSetupModal(1); return; }
+  if (a === 'wiz-next') { readWizStep(); wiz.step = Math.min(4, wiz.step + 1); renderSetupModal(); return; }
+  if (a === 'wiz-back') { readWizStep(); wiz.step = Math.max(1, wiz.step - 1); renderSetupModal(); return; }
+  if (a === 'wiz-cancel') { wiz = null; closeModal(); return; }
+  if (a === 'wiz-finish') { await finishWizard(); return; }
+  if (a === 'wiz-logo-pick') { $('#wizLogoFile').click(); return; }
+  if (a === 'wiz-logo-clear') { readWizStep(); wiz.logoFile = null; wiz.logoPreview = ''; wiz.clearLogo = true; renderSetupModal(); return; }
   if (a === 'swap-open') { openSwapModal(); return; }
   if (a === 'swap-apply') { const from = $('#swapFrom').value, to = $('#swapTo').value; const n = await applySwap(from, to, $('#swapRemove').checked); closeModal(); toast(n + ' product' + (n === 1 ? '' : 's') + ' switched to ' + state.spools[to].color); renderAll(); return; }
   if (a === 'adjust-open') { openAdjustModal(el.dataset.kind, el.dataset.id); return; }
@@ -1430,6 +1519,10 @@ document.addEventListener('submit', async e => {
 });
 document.addEventListener('change', async e => {
   const el = e.target;
+  if (el.id === 'wizLogoFile') { const f = el.files && el.files[0]; if (!f) return; if (f.size > 2 * 1024 * 1024) { toast('Keep the logo under 2 MB', true); return; } readWizStep(); wiz.logoFile = f; wiz.logoPreview = URL.createObjectURL(f); wiz.clearLogo = false; renderSetupModal(); return; }
+  if (el.name === 'wizKind') { document.querySelectorAll('input[name="wizKind"]').forEach(r => r.closest('label').classList.toggle('on', r.checked)); return; }
+  if (el.dataset.wizmod !== undefined) { el.closest('label').classList.toggle('off', !el.checked); return; }
+  if (el.dataset.module !== undefined) { const sh = shopCfg(); sh.modules[el.dataset.module] = el.checked; state.settings.shop = sh; saveSettingsSoon(); applyShop(); renderAll(); toast((el.checked ? 'Showing ' : 'Hiding ') + (MODULES.find(m => m[0] === el.dataset.module) || [])[1]); return; }
   if (el.id === 'pFiles') { const list = Array.from(el.files || []); if (!list.length) return; readProductForm(); if (draft.id) { (async () => { for (const f of list) await uploadProductFile(draft.id, f); renderProductModal(true); toast(list.length + ' file' + (list.length === 1 ? '' : 's') + ' uploaded'); })(); } else { draft._newFiles = (draft._newFiles || []).concat(list); renderProductModal(true); } return; }
   if (el.id === 'pPhotoFile') { const f = el.files && el.files[0]; if (!f) return; if (partDraft && $('#a_name')) { partDraft._photoFile = f; partDraft._photoPreview = URL.createObjectURL(f); readPartForm(); renderPartModal(true); return; } draft._photoFile = f; draft._photoPreview = URL.createObjectURL(f); readProductForm(); renderProductModal(true); return; }
   if (el.dataset.printer !== undefined) { el.closest('label').classList.toggle('on', el.checked); return; }
@@ -1501,7 +1594,7 @@ async function enter(){
   const allowed = await sb.rpc('is_allowed'); state.allowed = !!allowed.data;
   if (!state.allowed) { setAuthMode('signin'); showAuth(state.session.user.email + ' is not on the shop\'s sign-in list yet. Ask Cagney or Brittany to add it under Settings, then sign in again.', true); const m = $('#authMsg'); m.insertAdjacentHTML('beforeend', '<br><button type="button" class="btn ghost small" id="authOut" style="margin-top:8px">Sign out</button>'); $('#authOut').addEventListener('click', async () => { await sb.auth.signOut(); location.reload(); }); return; }
   showApp(); setStatus('live');
-  try { await loadAll(); renderAll(); subscribe(); } catch (e) { fail(e, 'Could not load the shop'); }
+  try { await loadAll(); renderAll(); subscribe(); if (!shopCfg().name) { wiz = null; openSetupModal(1); } } catch (e) { fail(e, 'Could not load the shop'); }
 }
 sb.auth.onAuthStateChange((event) => { if (event === 'PASSWORD_RECOVERY') { state.ui.recovery = true; enter(); } });
 renderScanModes();

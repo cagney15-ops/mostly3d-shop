@@ -453,6 +453,28 @@ table.breakdown tr.group td{color:var(--ink-2);font-size:11px;letter-spacing:.14
 .files .fr .fs{font-size:11.5px;color:var(--ink-3);white-space:nowrap}
 .files .fr.queued{border-style:dashed}
 .swap-preview{max-height:220px;overflow:auto;margin-top:8px}
+
+.logo-slot{display:inline-flex;align-items:center;justify-content:center;flex:none}
+.logo-slot img{max-height:66px;max-width:120px;object-fit:contain;display:block}
+.logo-slot .mono{width:56px;height:56px;border-radius:50%;background:var(--ink);color:#fff;display:grid;place-items:center;font-family:var(--font-display);font-size:26px}
+.modules{margin-bottom:18px}
+.modules .mods{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:8px;margin-top:10px}
+.modules .mod{display:flex;align-items:center;gap:10px;border:1px solid var(--line);border-radius:10px;padding:9px 12px;font-size:13.5px;cursor:pointer}
+.modules .mod.off{color:var(--ink-3)}
+.modules .mod small{display:block;font-size:11.5px;color:var(--ink-3)}
+.modules .mod input{accent-color:var(--red);width:18px;height:18px;flex:none}
+.wiz-steps{display:flex;gap:6px;margin-bottom:14px}
+.wiz-steps span{flex:1;height:4px;border-radius:2px;background:var(--line)}
+.wiz-steps span.on{background:var(--red)}
+.wiz-kind{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+@media (max-width:520px){.wiz-kind{grid-template-columns:1fr}}
+.wiz-kind label{border:1px solid var(--line-2);border-radius:12px;padding:12px 14px;cursor:pointer;display:block}
+.wiz-kind label.on{border-color:var(--ink);box-shadow:0 0 0 1px var(--ink) inset}
+.wiz-kind label b{display:block;font-family:var(--font-display);font-weight:400;font-size:18px}
+.wiz-kind label small{color:var(--ink-2)}
+.wiz-kind input{position:absolute;opacity:0}
+.logo-preview{width:96px;height:96px;border:1px dashed var(--line-2);border-radius:12px;display:grid;place-items:center;overflow:hidden;background:var(--panel)}
+.logo-preview img{max-width:100%;max-height:100%;object-fit:contain}
 @media print{.labels .label:not(.sel){display:none}.label .pick,.label .printed{display:none}.labels .label.sel{box-shadow:none;border-color:#bbb}}
 /* ⋯ menus */
 .pcard,.shelf-item{position:relative}
@@ -490,8 +512,8 @@ footer .script{font-size:22px;color:var(--red)}
 <div class="auth" id="auth" hidden>
   <div class="box">
     <header class="brand">
-      <svg class="mark" aria-hidden="true"><use href="#indiana"/></svg>
-      <div class="brand-text"><div class="wordmark">Mostly 3D</div><div class="script">shop</div><div class="madein">Made in Southern Indiana</div></div>
+      <span class="logo-slot" data-logo><svg class="mark" aria-hidden="true"><use href="#indiana"/></svg></span>
+      <div class="brand-text"><div class="wordmark" data-shop="name">Mostly 3D</div><div class="script" data-shop="tagline">shop</div><div class="madein" data-shop="madein">Made in Southern Indiana</div></div>
     </header>
     <form id="authForm" autocomplete="on">
       <div class="field"><label for="authEmail">Email</label><input id="authEmail" type="email" autocomplete="username" required></div>
@@ -505,11 +527,11 @@ footer .script{font-size:22px;color:var(--red)}
 
 <div class="wrap" id="app" hidden>
   <header class="brand">
-    <svg class="mark" aria-hidden="true"><use href="#indiana"/></svg>
+    <span class="logo-slot" data-logo><svg class="mark" aria-hidden="true"><use href="#indiana"/></svg></span>
     <div class="brand-text">
-      <h1 class="wordmark">Mostly 3D</h1>
-      <div class="script">shop</div>
-      <div class="madein">Made in Southern Indiana</div>
+      <h1 class="wordmark" data-shop="name">Mostly 3D</h1>
+      <div class="script" data-shop="tagline">shop</div>
+      <div class="madein" data-shop="madein">Made in Southern Indiana</div>
     </div>
     <div class="status" id="status"><span class="led"></span><span id="statusText">Opening</span><button type="button" id="signOut" title="Sign out">sign out</button></div>
   </header>
@@ -660,9 +682,11 @@ footer .script{font-size:22px;color:var(--red)}
         <div>
           <p class="eyebrow">Shop</p>
           <h2>Settings</h2>
-          <p class="lede">Costing assumptions, reorder defaults, and who can sign in.</p>
+          <p class="lede">Costing assumptions, reorder defaults, what shows on screen, and who can sign in.</p>
         </div>
+        <div class="sec-actions"><button class="btn" data-action="setup-open">Customize your shop</button></div>
       </div>
+      <div class="modules card" id="modulesBox"></div>
       <div class="settings" id="settingsBox"></div>
       <div class="allowed card" id="allowedBox"></div>
     </section>
