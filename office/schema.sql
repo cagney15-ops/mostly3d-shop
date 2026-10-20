@@ -247,3 +247,20 @@ begin
     end if;
   end loop;
 end $$;
+
+-- ---------------------------------------------------------------------------
+-- Write helpers. Agents never write INSERT/UPDATE/DELETE themselves (the MCP tool gates
+-- them behind a confirmation prompt); every write goes through one of these, called with SELECT.
+-- Security definer so the scheduled runs can write without an authenticated user.
+-- office_start_run(agent, task) -> run id            office_finish_run(run, status, summary, stats, error)
+-- office_set_task(agent, task)                        office_log(run, agent, kind, message, data)
+-- office_task(agent, title, detail, kind, due, link, ref)   -> no-op if an open task with the title exists
+-- office_decision(agent, title, detail, options, priority, due, link, ref) -> no-op if open title exists
+-- office_decision_acted(id)   office_task_done(id, by)
+-- office_upsert_order(jsonb)  office_upsert_booking(jsonb)  office_booking_prep_sent(external_id)
+-- office_upsert_event(jsonb)  office_events_mark_past()
+-- office_insight(agent, run, kind, severity, title, detail, data)   office_clear_insights(agent, days)
+-- office_save_brief(date, period, greeting, headline, body, stats) -> id   office_brief_emailed(id, emails[])
+-- office_sweep_stale()  marks runs open > 2 h as failed     office_delete_rows(table, key, value)  admin cleanup
+-- Definitions live in the Supabase migrations office_run_helpers, office_write_helpers, office_admin_helpers.
+-- Known tool quirk: a '#' character anywhere in SQL text hangs the Supabase MCP execute_sql call (180 s timeout).

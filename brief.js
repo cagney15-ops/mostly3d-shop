@@ -40,6 +40,7 @@ function md(text) {
     const l = raw.trim();
     if (!l) { close(); continue; }
     if (/^#{1,2}\s/.test(l)) { close(); out += '<h3>' + inline(l.replace(/^#+\s/, '')) + '</h3>'; continue; }
+    if (/^\*\*[^*]{1,60}\*\*:?$/.test(l)) { close(); out += '<h3>' + esc(l.replace(/^\*\*|\*\*:?$/g, '')) + '</h3>'; continue; }
     if (/^#{3,}\s/.test(l)) { close(); out += '<h4>' + inline(l.replace(/^#+\s/, '')) + '</h4>'; continue; }
     if (/^([-*•]|\d+[.)])\s/.test(l)) { if (!inList) { out += '<ul>'; inList = true; } out += '<li>' + inline(l.replace(/^([-*•]|\d+[.)])\s/, '')) + '</li>'; continue; }
     close(); out += '<p>' + inline(l) + '</p>';
